@@ -154,11 +154,11 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# --- 初始化模型 (默认隐形开启联网) ---
+# --- 初始化模型 ---
 try:
-    # 🟢 核心修改：强制开启联网，并使用防报错写法
+    # 1. 定义工具配置 (听服务器的，改回 google_search)
     tools_config = [
-        {"google_search_retrieval": {}}
+        {"google_search": {}}
     ]
 
     generation_config = {"temperature": temperature}
@@ -166,13 +166,16 @@ try:
     model = genai.GenerativeModel(
         selected_model,
         generation_config=generation_config,
+        # 2. 传入工具
         tools=tools_config
     )
     chat = model.start_chat(history=[])
 except Exception as e:
     st.error(f"模型配置错误: {e}")
-    st.caption(f"SDK Version: {genai.__version__}")
+    # 打印版本号，死个明白
+    st.caption(f"当前 SDK 版本: {genai.__version__} (如果低于 0.8.3 必报错)")
     st.stop()
+
 
 # --- 聊天显示 ---
 for msg in current_session['history']:
@@ -259,3 +262,4 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
+
