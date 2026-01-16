@@ -156,17 +156,24 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# --- 初始化模型 (核心修复区域) ---
+# --- 初始化模型 (通用兼容版) ---
 try:
-    # 🟢 修复1：直接使用 protos 绕过 SDK 字典检查 (解决 Unknown field 报错)
-    # 🟢 修复2：不再判断 if enable_search，直接默认开启 (解决 NameError 报错)
+    # 联网配置
+    tools_config = []
     
-    # 定义工具：永远开启 Google 搜索
-    tools_config = [
-        protos.Tool(
-            google_search=protos.GoogleSearch()
-        )
-    ]
+    # 【核心修改】
+    # 既然找不到类，也不认字典，我们就直接利用 Tool 的构造函数。
+    # 这种写法是 Protobuf 的标准特性：如果有 google_search 字段，就用空字典 {} 初始化它。
+    # 如果底层库实在太旧不支持 google_search 字段，catch 里的报错会告诉我们需要升级依赖。
+    try:
+        if enable_search:
+            tools_config = [
+                protos.Tool(google_search={})
+            ]
+    except Exception as e:
+        # 如果报错说 Tool 没有 google_search 字段，说明依赖库实在太老了
+        st.warning("⚠️ 警告：云端依赖库版本过低，联网搜索暂时无法启用。建议在 requirements.txt 添加 google-ai-generativelanguage>=0.6.6")
+        tools_config = None # 回退到不联网模式
 
     generation_config = {"temperature": temperature}
     
@@ -175,11 +182,10 @@ try:
         generation_config=generation_config,
         tools=tools_config
     )
-    
     chat = model.start_chat(history=[])
 
 except Exception as e:
-    st.error(f"模型配置错误: {e}")
+    st.error(f"模型配置严重错误: {e}")
     st.caption(f"SDK Version: {genai.__version__}")
     st.stop()
 
@@ -268,3 +274,4 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
+
