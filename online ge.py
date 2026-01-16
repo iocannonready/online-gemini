@@ -84,7 +84,7 @@ with st.sidebar:
         temperature = st.slider("创造力", 0.0, 2.0, 0.7)
 
     st.divider()
-
+    st.caption(f"SDK 版本: {genai.__version__}")
     # 会话列表标题 + 小加号
     col_header1, col_header2 = st.columns([4, 1])
     with col_header1:
@@ -296,3 +296,4 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
+
