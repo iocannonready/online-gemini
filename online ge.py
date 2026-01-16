@@ -3,252 +3,250 @@ import os
 import time
 import shutil
 import google.generativeai as genai
-from google.api_core import exceptions
+import uuid # 用于生成唯一的对话ID
 
-# ================= 0. 默认配置区 (你可以修改这里) =================
+# ================= 1. 配置区域 =================
 
-# 你的 API Key (如果填了，打开软件就会自动带上)
-DEFAULT_API_KEY = "AIzaSyBO5CPR1_0ie8tPMd-e1fBQjf4rty5x8t4" 
+# 【方式 A】安全做法 (推荐)：在 Streamlit 网页后台填 Secrets，这里不用改
+# 【方式 B】简单做法：直接把你的 Key 填在下面的引号里
+HARDCODED_KEY = "" 
 
-# 你的本地代理端口 (Clash=7890, v2rayN=10809, 其他=1080)
-DEFAULT_PROXY_PORT = "1080"
+# 尝试获取 Key：优先从云端 Secrets 获取，取不到就用代码里写的
+try:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    API_KEY = HARDCODED_KEY
 
-# 默认是否开启代理 (你自己用设为 True，发给没梯子的朋友设为 False)
-DEFAULT_USE_PROXY = True
-
-# ================= 1. 页面初始化 =================
+# 页面基础配置
 st.set_page_config(
-    page_title="Gemini 2.5 全能助手",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="凶哥哥的AI",
+    page_icon="🦁",
+    layout="wide"
 )
 
-# 初始化 Session State (记忆功能)
-if "chat_history" not in st.session_state: st.session_state.chat_history = []
-if "uploaded_file_refs" not in st.session_state: st.session_state.uploaded_file_refs = []
-if "chat_session" not in st.session_state: st.session_state.chat_session = None
-if "files_processed" not in st.session_state: st.session_state.files_processed = False
+# ================= 2. 会话管理逻辑 (多对话功能) =================
 
-# ================= 2. 侧边栏设置 =================
+if "all_sessions" not in st.session_state:
+    # 初始化默认会话
+    default_id = str(uuid.uuid4())
+    st.session_state.all_sessions = {
+        default_id: {
+            "title": "新对话 1", 
+            "history": [], 
+            "files": [],     # 这一轮对话挂载的文件
+            "processed": False 
+        }
+    }
+    st.session_state.current_session_id = default_id
+
+def create_new_session():
+    new_id = str(uuid.uuid4())
+    count = len(st.session_state.all_sessions) + 1
+    st.session_state.all_sessions[new_id] = {
+        "title": f"新对话 {count}",
+        "history": [],
+        "files": [],
+        "processed": False
+    }
+    st.session_state.current_session_id = new_id
+    st.rerun()
+
+def delete_session(session_id):
+    if len(st.session_state.all_sessions) > 1:
+        del st.session_state.all_sessions[session_id]
+        # 如果删除的是当前会话，切换到第一个
+        if session_id == st.session_state.current_session_id:
+            st.session_state.current_session_id = list(st.session_state.all_sessions.keys())[0]
+        st.rerun()
+
+# 获取当前会话的数据
+current_id = st.session_state.current_session_id
+current_session = st.session_state.all_sessions[current_id]
+
+# ================= 3. 侧边栏 =================
 with st.sidebar:
-    st.title("⚙️ 设置面板")
-    
-    # --- API Key ---
-    api_key = st.text_input("Google API Key", value=DEFAULT_API_KEY, type="password", help="在此填入 AIza 开头的密钥")
-    
-    # --- 网络设置 (关键修改：增加开关) ---
-    st.markdown("### 🌐 网络连接")
-    use_proxy = st.checkbox("开启本地代理", value=DEFAULT_USE_PROXY, help="如果你在云端部署，或者朋友不需要梯子，请取消勾选")
-    
-    proxy_port = DEFAULT_PROXY_PORT
-    if use_proxy:
-        proxy_port = st.text_input("代理端口 (HTTP)", value=DEFAULT_PROXY_PORT)
+    st.title("🦁 凶哥哥的AI")
     
     # --- 模型选择 ---
-    st.markdown("### 🧠 模型选择")
-    # 2026年推荐列表：Flash 系列免费且快
-    model_options = [
-        "gemini-2.5-flash",       # 首选：最新一代
-        "gemini-2.0-flash",       # 备选：极度稳定
-        "gemini-1.5-flash",       # 保底
-        "gemini-1.5-pro",         # 慢，仅用于处理极度复杂的逻辑
-    ]
-    selected_model = st.selectbox("当前模型", model_options, index=0)
+    selected_model = st.selectbox(
+        "当前模型", 
+        ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+        index=0
+    )
     
     st.divider()
     
-    # --- 重置按钮 ---
-    if st.button("🗑️ 清空对话 & 重置", type="primary"):
-        st.session_state.chat_history = []
-        st.session_state.uploaded_file_refs = []
-        st.session_state.chat_session = None
-        st.session_state.files_processed = False
-        st.rerun()
-
-# ================= 3. 功能函数 =================
-
-def configure_env(key, enable_proxy, port):
-    """配置环境和网络"""
-    if not key: return False
+    # --- 多对话管理 ---
+    st.subheader("💬 会话列表")
     
-    if enable_proxy:
-        # 开启代理
-        os.environ['HTTP_PROXY'] = f'http://127.0.0.1:{port}'
-        os.environ['HTTPS_PROXY'] = f'http://127.0.0.1:{port}'
-    else:
-        # 关闭代理 (清除环境变量，防止残留)
-        os.environ.pop('HTTP_PROXY', None)
-        os.environ.pop('HTTPS_PROXY', None)
+    if st.button("➕ 新建对话", use_container_width=True):
+        create_new_session()
         
-    genai.configure(api_key=key)
+    # 显示所有会话的单选按钮
+    session_ids = list(st.session_state.all_sessions.keys())
+    session_titles = [st.session_state.all_sessions[k]["title"] for k in session_ids]
+    
+    # 找到当前 ID 在列表中的索引
+    current_index = session_ids.index(current_id) if current_id in session_ids else 0
+    
+    selected_index = st.radio(
+        "选择历史记录:", 
+        range(len(session_ids)), 
+        format_func=lambda i: session_titles[i],
+        index=current_index,
+        label_visibility="collapsed"
+    )
+    
+    # 如果用户切换了单选框
+    if session_ids[selected_index] != current_id:
+        st.session_state.current_session_id = session_ids[selected_index]
+        st.rerun()
+        
+    st.divider()
+    if st.button("🗑️ 删除当前对话"):
+        delete_session(current_id)
+
+# ================= 4. 功能函数 (云端版-无代理) =================
+
+def configure_env():
+    if not API_KEY: return False
+    # 云端不需要代理，直接配置
+    genai.configure(api_key=API_KEY)
     return True
 
-def upload_with_retry(path, max_retries=5):
-    """带重试机制的文件上传"""
-    file_name = os.path.basename(path)
-    delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            remote_file = genai.upload_file(path)
-            return remote_file
-        except Exception as e:
-            # 静默重试，只在最后一次报错
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2 # 指数退避
-            else:
-                st.error(f"❌ {file_name} 上传失败: {e}")
-                return None
-
-def process_and_upload_files(uploaded_files):
-    """处理上传全流程"""
-    # 1. 保存到本地缓存
-    temp_dir = "temp_images_cache"
+def upload_files(uploaded_files):
+    """上传文件并返回引用"""
+    # 云端文件系统处理
+    temp_dir = "cloud_temp"
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     os.makedirs(temp_dir)
     
+    refs = []
+    status_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # 1. 保存并排序
     local_paths = []
     for f in uploaded_files:
         path = os.path.join(temp_dir, f.name)
-        with open(path, "wb") as buffer:
-            buffer.write(f.getbuffer())
+        with open(path, "wb") as buffer: buffer.write(f.getbuffer())
         local_paths.append(path)
+    local_paths.sort()
     
-    local_paths.sort() # 按文件名排序
-    
-    # 2. 上传到 Google
-    uploaded_refs = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total = len(local_paths)
+    # 2. 上传
     for i, path in enumerate(local_paths):
         name = os.path.basename(path)
-        status_text.markdown(f"🚀 正在上传 **({i+1}/{total})**: `{name}` ...")
-        
-        ref = upload_with_retry(path)
-        if ref: uploaded_refs.append(ref)
-        
-        progress_bar.progress((i + 1) / total)
+        status_text.text(f"正在上传 {i+1}/{len(local_paths)}: {name}")
+        try:
+            f = genai.upload_file(path)
+            refs.append(f)
+        except Exception as e:
+            st.error(f"上传失败: {e}")
+        status_bar.progress((i+1)/len(local_paths))
     
-    # 3. 等待解析 (Active 检查)
-    if uploaded_refs:
-        status_text.markdown("⏳ **AI 正在阅读图片内容 (Deep Reading)...**")
-        with st.spinner("请稍候，Google 正在分析文档结构..."):
-            wait_start = time.time()
-            while True:
-                all_ready = True
-                for ref in uploaded_refs:
-                    try:
-                        # 获取最新状态
-                        current = genai.get_file(ref.name)
-                        if current.state.name != "ACTIVE":
-                            all_ready = False
-                            if current.state.name == "FAILED":
-                                st.error(f"❌ 图片 {current.display_name} 解析失败")
-                            break
-                    except:
-                        pass # 忽略网络波动
-                
-                if all_ready: break
-                
-                if time.time() - wait_start > 300: # 5分钟超时
-                    st.warning("⚠️ 等待超时，尝试强制继续...")
-                    break
-                time.sleep(2)
-                
+    # 3. 等待解析
+    if refs:
+        status_text.text("等待 Google 解析图片...")
+        while True:
+            ready = True
+            for r in refs:
+                if genai.get_file(r.name).state.name == "PROCESSING":
+                    ready = False; break
+            if ready: break
+            time.sleep(2)
+            
     status_text.empty()
-    progress_bar.empty()
-    
-    # 清理本地缓存
-    try:
-        shutil.rmtree(temp_dir)
-    except:
-        pass
-        
-    return uploaded_refs
+    status_bar.empty()
+    shutil.rmtree(temp_dir)
+    return refs
 
-# ================= 4. 主界面逻辑 =================
+# ================= 5. 主界面逻辑 =================
 
-st.title("🤖 Gemini 2.5 文档分析助手")
-st.markdown("只需拖入图片，即可一键提取文字、摘要或进行问答。")
-
-# --- 1. 环境检查 ---
-if not configure_env(api_key, use_proxy, proxy_port):
-    st.warning("👈 请先在左侧侧边栏填入 API Key 才能开始使用")
+if not configure_env():
+    st.warning("⚠️ 未检测到 API Key！请在代码中填入，或在 Streamlit Secrets 中配置。")
     st.stop()
 
-# --- 2. 文件上传区域 ---
-with st.container():
-    uploaded_files = st.file_uploader(
-        "📄 上传图片 (支持批量选择)", 
-        type=['png', 'jpg', 'jpeg', 'webp'], 
-        accept_multiple_files=True
-    )
+st.header(f"🦁 {current_session['title']}")
 
+# --- 文件上传 ---
+# 只在文件还没处理过时显示上传框
+if not current_session['files']:
+    uploaded_files = st.file_uploader("📂 拖入图片/文档 (支持批量)", accept_multiple_files=True)
     if uploaded_files:
-        # 如果还没处理过，显示开始按钮
-        if not st.session_state.uploaded_file_refs:
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if st.button("🚀 开始分析", type="primary", use_container_width=True):
-                    refs = process_and_upload_files(uploaded_files)
-                    if refs:
-                        st.session_state.uploaded_file_refs = refs
-                        st.success(f"✅ 已成功加载 {len(refs)} 张图片到上下文！")
-                        st.session_state.files_processed = False # 重置发送标记
-        else:
-            st.info(f"📚 当前会话已包含 {len(st.session_state.uploaded_file_refs)} 张图片 (如需更换请点击左侧重置)")
+        if st.button("开始上传"):
+            refs = upload_files(uploaded_files)
+            current_session['files'] = refs
+            current_session['processed'] = False
+            st.success(f"已挂载 {len(refs)} 个文件")
+            st.rerun()
+else:
+    st.info(f"📚 当前对话已包含 {len(current_session['files'])} 个文件")
+    if st.button("清除文件 (重新上传)"):
+        current_session['files'] = []
+        current_session['processed'] = False
+        st.rerun()
 
-# --- 3. 聊天区域 ---
-st.divider()
-
-# 初始化模型连接
-if st.session_state.chat_session is None:
-    try:
-        model = genai.GenerativeModel(selected_model)
-        st.session_state.chat_session = model.start_chat(history=[])
-    except Exception as e:
-        st.error(f"连接模型失败: {e}")
+# --- 聊天区域 ---
+# 恢复聊天对象
+try:
+    model = genai.GenerativeModel(selected_model)
+    # 这里我们不用 start_chat 的 history，而是手动管理，因为要支持多会话切换
+    chat = model.start_chat(history=[]) 
+except Exception as e:
+    st.error(f"模型连接失败: {e}")
+    st.stop()
 
 # 显示历史消息
-for msg in st.session_state.chat_history:
+for msg in current_session['history']:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
 # 输入框
-if prompt := st.chat_input("在此输入问题... (例如：帮我整理这些图片的内容)"):
-    # 1. 显示用户输入
-    st.chat_message("user").markdown(prompt)
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
+if prompt := st.chat_input("输入问题..."):
+    # 1. 记录并显示用户提问
+    current_session['history'].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
     
     # 2. 生成回复
     with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        full_response = ""
+        box = st.empty()
+        full_text = ""
         
         try:
-            # 逻辑：如果是第一句话且有图片，就把图片打包一起发
-            if st.session_state.uploaded_file_refs and not st.session_state.files_processed:
-                parts = [prompt] + st.session_state.uploaded_file_refs
-                response = st.session_state.chat_session.send_message(parts, stream=True)
-                st.session_state.files_processed = True # 标记已发过图片
+            # 构造历史上下文 (为了让 AI 记住之前的对话)
+            # 这一步稍微复杂点：我们需要把 session 里的 history 转换成 gemini 的格式
+            history_for_api = []
+            for h in current_session['history'][:-1]: # 不包含刚发的这句
+                history_for_api.append({
+                    "role": "user" if h["role"] == "user" else "model",
+                    "parts": [h["content"]]
+                })
+            
+            chat.history = history_for_api
+            
+            # 发送逻辑
+            if current_session['files'] and not current_session['processed']:
+                # 第一次发带图片
+                parts = [prompt] + current_session['files']
+                response = chat.send_message(parts, stream=True)
+                current_session['processed'] = True
             else:
-                # 后续对话只发文字
-                response = st.session_state.chat_session.send_message(prompt, stream=True)
-            
-            # 流式打印
+                # 纯文字
+                response = chat.send_message(prompt, stream=True)
+                
             for chunk in response:
-                full_response += chunk.text
-                message_placeholder.markdown(full_response + "▌")
-            message_placeholder.markdown(full_response)
+                full_text += chunk.text
+                box.markdown(full_text + "▌")
+            box.markdown(full_text)
             
-            # 存入历史
-            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+            # 记录回复
+            current_session['history'].append({"role": "assistant", "content": full_text})
             
+            # (可选) 根据第一句话自动修改会话标题
+            if len(current_session['history']) == 2:
+                current_session['title'] = prompt[:10] + "..."
+                st.rerun()
+                
         except Exception as e:
-            st.error(f"❌ 请求出错: {e}")
-            if "429" in str(e):
-                st.warning("⚠️ 触发了免费版的速度限制，请喝口水，稍后再试。")
+            st.error(f"出错: {e}")
