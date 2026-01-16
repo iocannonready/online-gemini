@@ -4,33 +4,31 @@ import time
 import shutil
 import google.generativeai as genai
 import uuid
-from google.api_core import exceptions
 
 # ================= 1. 配置区域 =================
 
-# 你的 API Key (如果 Streamlit Secrets 没填，就会用这个)
-HARDCODED_KEY = "" 
+HARDCODED_KEY = "" # 在此填入 Key，或使用 Streamlit Secrets (推荐)
 
-# 尝试获取 Key
+# 获取 Key
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
     API_KEY = HARDCODED_KEY
 
-# 页面配置
+# 页面配置 (去掉了图标，标题改得更简洁)
 st.set_page_config(
-    page_title="凶哥哥的AI",
-    page_icon="🦁",
-    layout="wide"
+    page_title="AI 助手",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ================= 2. 会话管理 & 状态初始化 =================
+# ================= 2. 会话管理逻辑 =================
 
 if "all_sessions" not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state.all_sessions = {
         default_id: {
-            "title": "新对话 1", 
+            "title": "新对话", 
             "history": [], 
             "files": [], 
             "processed": False 
@@ -38,16 +36,15 @@ if "all_sessions" not in st.session_state:
     }
     st.session_state.current_session_id = default_id
 
-# 自动重发标记 (用于重新生成功能)
+# 自动重发标记
 if "trigger_regenerate" not in st.session_state:
     st.session_state.trigger_regenerate = False
 
 def create_new_session():
     new_id = str(uuid.uuid4())
-    count = len(st.session_state.all_sessions) + 1
     st.session_state.all_sessions[new_id] = {
-        "title": f"新对话 {count}",
-        "history": [], # 结构: {"role":Str, "content":Str, "usage":Str}
+        "title": "新对话",
+        "history": [],
         "files": [],
         "processed": False
     }
@@ -57,80 +54,79 @@ def create_new_session():
 def delete_session(session_id):
     if len(st.session_state.all_sessions) > 1:
         del st.session_state.all_sessions[session_id]
+        # 如果删除的是当前选中的，切到第一个
         if session_id == st.session_state.current_session_id:
             st.session_state.current_session_id = list(st.session_state.all_sessions.keys())[0]
         st.rerun()
 
-# 获取当前会话
+def switch_session(session_id):
+    st.session_state.current_session_id = session_id
+    st.rerun()
+
+# 获取当前会话数据
 current_id = st.session_state.current_session_id
+# 防止删除后 current_id 失效
+if current_id not in st.session_state.all_sessions:
+    current_id = list(st.session_state.all_sessions.keys())[0]
+    st.session_state.current_session_id = current_id
 current_session = st.session_state.all_sessions[current_id]
 
-# ================= 3. 侧边栏 (高级控制) =================
+# ================= 3. 侧边栏 (全新设计) =================
 with st.sidebar:
-    st.title("🦁 凶哥哥的AI")
-    
-    # --- 模型与参数 ---
-    with st.expander("🧠 模型与参数", expanded=True):
+    # 顶部设置区
+    with st.expander("⚙️ 设置与模型", expanded=True):
         selected_model = st.selectbox(
-            "模型选择", 
-            ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
-            index=0
+            "模型", 
+            ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+            label_visibility="collapsed"
         )
-        
-        # 创造力调节 (Temperature)
-        temperature = st.slider(
-            "创造力 (Temperature)", 
-            min_value=0.0, max_value=2.0, value=0.7, step=0.1,
-            help="数值越高越发散创意，数值越低越严谨。"
-        )
-        
-        # 联网开关
-        enable_search = st.toggle("🌍 联网搜索 (Google Grounding)", value=False, help="开启后，AI 会查询最新实时信息。")
-
-    # --- 人设指令 ---
-    with st.expander("🎭 系统人设 (System Prompt)", expanded=False):
-        system_instruction = st.text_area(
-            "你希望 AI 扮演什么角色？",
-            placeholder="例如：你是一位资深律师，请用专业且严谨的口吻回答问题。",
-            height=100
-        )
+        enable_search = st.toggle("🌍 联网搜索", value=False)
+        temperature = st.slider("创造力", 0.0, 2.0, 0.7)
 
     st.divider()
-    
-    # --- 对话列表 ---
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        st.caption("💬 对话列表")
-    with col2:
-        if st.button("➕", help="新建对话"):
-            create_new_session()
-    
-    session_ids = list(st.session_state.all_sessions.keys())
-    session_titles = [st.session_state.all_sessions[k]["title"] for k in session_ids]
-    
-    current_index = session_ids.index(current_id) if current_id in session_ids else 0
-    
-    selected_index = st.radio(
-        "History", range(len(session_ids)), 
-        format_func=lambda i: session_titles[i],
-        index=current_index, label_visibility="collapsed"
-    )
-    
-    if session_ids[selected_index] != current_id:
-        st.session_state.current_session_id = session_ids[selected_index]
-        st.rerun()
-    
-    # 重命名
-    with st.popover("🖊️ 重命名"):
-        new_name = st.text_input("新名称", value=current_session['title'])
-        if new_name != current_session['title']:
-            current_session['title'] = new_name
-            st.rerun()
-            
-    if st.button("🗑️ 删除此对话", use_container_width=True):
-        delete_session(current_id)
 
-# ================= 4. 核心功能函数 =================
+    # 会话列表标题 + 小加号
+    col_header1, col_header2 = st.columns([4, 1])
+    with col_header1:
+        st.caption("会话列表")
+    with col_header2:
+        # 小加号按钮
+        if st.button("➕", help="新建对话", use_container_width=True):
+            create_new_session()
+
+    # 循环渲染会话列表 (自定义样式)
+    # 按创建顺序倒序排列(新的在上面) - 简单起见这里用字典顺序
+    session_ids = list(st.session_state.all_sessions.keys())
+    
+    for sess_id in session_ids:
+        sess_data = st.session_state.all_sessions[sess_id]
+        
+        # 每一行分两列：[标题按钮] [设置小按钮]
+        c1, c2 = st.columns([0.85, 0.15])
+        
+        # 1. 标题按钮 (高亮当前选中的)
+        is_active = (sess_id == current_id)
+        btn_type = "primary" if is_active else "secondary"
+        
+        with c1:
+            if st.button(sess_data["title"], key=f"btn_{sess_id}", type=btn_type, use_container_width=True):
+                switch_session(sess_id)
+        
+        # 2. 设置小按钮 (Popover 弹出菜单)
+        with c2:
+            with st.popover("⋮", use_container_width=True):
+                st.markdown("#### 管理会话")
+                # 重命名
+                new_name = st.text_input("名称", value=sess_data["title"], key=f"input_{sess_id}")
+                if new_name != sess_data["title"]:
+                    st.session_state.all_sessions[sess_id]["title"] = new_name
+                    st.rerun()
+                
+                # 删除
+                if st.button("🗑️ 删除", key=f"del_{sess_id}", type="primary"):
+                    delete_session(sess_id)
+
+# ================= 4. 功能函数 =================
 
 def configure_env():
     if not API_KEY: return False
@@ -143,9 +139,9 @@ def upload_files(uploaded_files):
     os.makedirs(temp_dir)
     
     refs = []
-    status_text = st.empty()
-    
+    status = st.empty()
     local_paths = []
+    
     for f in uploaded_files:
         path = os.path.join(temp_dir, f.name)
         with open(path, "wb") as buffer: buffer.write(f.getbuffer())
@@ -153,8 +149,7 @@ def upload_files(uploaded_files):
     local_paths.sort()
     
     for i, path in enumerate(local_paths):
-        name = os.path.basename(path)
-        status_text.caption(f"📤 正在上传 {i+1}/{len(local_paths)}: {name}")
+        status.caption(f"正在上传 {i+1}/{len(local_paths)}...")
         try:
             f = genai.upload_file(path)
             refs.append(f)
@@ -162,7 +157,7 @@ def upload_files(uploaded_files):
             st.error(f"上传失败: {e}")
     
     if refs:
-        status_text.caption("⏳ 正在等待 Google 解析文档...")
+        status.caption("正在解析...")
         while True:
             ready = True
             for r in refs:
@@ -171,7 +166,7 @@ def upload_files(uploaded_files):
             if ready: break
             time.sleep(1)
             
-    status_text.empty()
+    status.empty()
     shutil.rmtree(temp_dir)
     return refs
 
@@ -181,95 +176,85 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# 极简标题
-st.markdown(f"##### 🗨️ {current_session['title']}")
-
-# --- 1. 初始化模型 (动态配置) ---
+# --- 初始化模型 (修复联网报错) ---
 try:
-    # 配置联网工具
-    tools = []
+    tools_config = []
     if enable_search:
-        tools = [{"google_search": {}}] # 启用 Google 搜索
+        # 【关键修复】使用符合新版 SDK 的 Google Search 定义方式
+        tools_config = [{"google_search": {}}] 
 
-    generation_config = {
-        "temperature": temperature,
-        # "max_output_tokens": 8192, 
-    }
+    generation_config = {"temperature": temperature}
     
     model = genai.GenerativeModel(
         selected_model,
         generation_config=generation_config,
-        system_instruction=system_instruction if system_instruction else None, # 注入人设
-        tools=tools
+        tools=tools_config
     )
     chat = model.start_chat(history=[])
 except Exception as e:
-    st.error(f"模型配置失败: {e}")
+    st.error(f"模型配置错误: {e}")
+    st.caption("提示: 联网搜索报错通常是因为 SDK 版本过低，请在终端运行: pip install -U google-generativeai")
     st.stop()
 
-# --- 2. 显示历史消息 ---
+# --- 聊天历史显示 ---
+# 这一块代码放在上面，防止被底部的输入框挤上去
 for msg in current_session['history']:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        # 显示 Token 统计 (如果有)
         if "usage" in msg:
             st.caption(f"📊 {msg['usage']}")
 
-# --- 3. 重新生成按钮 (位于对话流底部) ---
-if len(current_session['history']) >= 2:
-    last_role = current_session['history'][-1]['role']
-    if last_role == 'assistant':
-        col_regen, col_space = st.columns([1, 6])
-        with col_regen:
-            if st.button("🔄 重新生成", help="删除上一条回复并重试"):
-                # 逻辑：删除最后一条 Assistant 回复，并触发自动发送
-                current_session['history'].pop() 
-                st.session_state.trigger_regenerate = True
+# --- 底部输入区与附件 ---
+
+# 创建一个容器，放在聊天记录下方
+bottom_container = st.container()
+
+with bottom_container:
+    # 1. 附件控制区 (极简风格)
+    # 如果有已挂载的文件，显示一行小提示
+    if current_session['files']:
+        col_info, col_clear = st.columns([8, 2])
+        with col_info:
+            st.success(f"📎 已挂载 {len(current_session['files'])} 个文件 (将随下一次提问发送)")
+        with col_clear:
+            if st.button("卸载文件", key="clear_files"):
+                current_session['files'] = []
+                current_session['processed'] = False
                 st.rerun()
 
-# --- 4. 附件按钮 (Popover) ---
-with st.popover("📎 添加图片/文档", use_container_width=True):
-    if current_session['files']:
-        st.info(f"✅ 已挂载 {len(current_session['files'])} 个文件")
-        if st.button("清空文件"):
-            current_session['files'] = []
-            current_session['processed'] = False
-            st.rerun()
-    
-    uploaded_files = st.file_uploader("拖拽文件", accept_multiple_files=True, label_visibility="collapsed")
-    if uploaded_files:
-        if st.button("确认上传"):
-            refs = upload_files(uploaded_files)
-            current_session['files'] = refs
-            current_session['processed'] = False
-            st.success("上传成功")
-            time.sleep(0.5)
-            st.rerun()
+    # 2. 上传按钮与输入框
+    # 使用 popover 模拟“点击回形针弹出上传框”的效果
+    with st.popover("📎 添加附件", help="上传图片或文档"):
+        files = st.file_uploader("选择文件", accept_multiple_files=True, label_visibility="collapsed")
+        if files:
+            if st.button("确认上传", use_container_width=True):
+                refs = upload_files(files)
+                current_session['files'] = refs
+                current_session['processed'] = False
+                st.rerun()
 
-# --- 5. 处理输入 (包含重新生成逻辑) ---
+    # 3. 聊天输入框 (Streamlit 强制置底)
+    prompt = st.chat_input("输入问题...")
 
-# 获取输入：或者是用户打字的，或者是“重新生成”触发的
-prompt = st.chat_input("在此输入问题...")
-
+# --- 处理发送逻辑 ---
 if st.session_state.trigger_regenerate:
-    # 如果是重新生成，从历史记录里找回用户最后一条话
     if current_session['history'] and current_session['history'][-1]['role'] == 'user':
         prompt = current_session['history'][-1]['content']
-        # 临时移除这一条，因为下面代码会再次 append
-        current_session['history'].pop() 
-    st.session_state.trigger_regenerate = False # 重置标记
+        current_session['history'].pop()
+    st.session_state.trigger_regenerate = False
 
 if prompt:
-    # 显示用户输入
     current_session['history'].append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    st.rerun() # 强制刷新以立即显示用户的提问
+
+# 页面刷新后，如果检测到最后一条是 user，则触发 AI 回复
+if current_session['history'] and current_session['history'][-1]['role'] == 'user':
+    # 这里不需要再显示 user message，因为上面已经渲染过了
     
-    # 生成回复
     with st.chat_message("assistant"):
         box = st.empty()
         full_text = ""
-        usage_info = ""
+        usage_str = ""
         
         try:
             # 构造 History
@@ -283,36 +268,31 @@ if prompt:
             
             # 发送
             if current_session['files'] and not current_session['processed']:
-                parts = [prompt] + current_session['files']
+                parts = [current_session['history'][-1]['content']] + current_session['files']
                 response = chat.send_message(parts, stream=True)
                 current_session['processed'] = True
             else:
-                response = chat.send_message(prompt, stream=True)
+                response = chat.send_message(current_session['history'][-1]['content'], stream=True)
             
-            # 流式接收
             for chunk in response:
                 full_text += chunk.text
                 box.markdown(full_text + "▌")
-                # 尝试获取 Token 统计
                 if chunk.usage_metadata:
-                    in_tok = chunk.usage_metadata.prompt_token_count
-                    out_tok = chunk.usage_metadata.candidates_token_count
-                    usage_info = f"Token: 输入 {in_tok} + 输出 {out_tok} = 总计 {in_tok + out_tok}"
+                    in_t = chunk.usage_metadata.prompt_token_count
+                    out_t = chunk.usage_metadata.candidates_token_count
+                    usage_str = f"Token: {in_t}+{out_t}={in_t+out_t}"
 
             box.markdown(full_text)
             
-            # 保存记录
-            msg_record = {"role": "assistant", "content": full_text}
-            if usage_info:
-                msg_record["usage"] = usage_info
-                st.caption(f"📊 {usage_info}")
-                
-            current_session['history'].append(msg_record)
+            msg_data = {"role": "assistant", "content": full_text}
+            if usage_str: msg_data["usage"] = usage_str
+            current_session['history'].append(msg_data)
             
-            # 自动改名
+            # 自动重命名 (仅第一句)
             if len(current_session['history']) == 2:
-                current_session['title'] = prompt[:8] + "..."
-                st.rerun()
-                
+                current_session['title'] = full_text[:10] + "..."
+            
+            st.rerun()
+            
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"出错: {e}")
