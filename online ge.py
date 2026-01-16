@@ -4,11 +4,12 @@ import time
 import shutil
 import google.generativeai as genai
 import uuid
-from google.generativeai import protos
+# 【新增】引入底层协议库，彻底解决 Unknown field 报错
+from google.generativeai import protos 
 
 # ================= 1. 配置区域 =================
 
-HARDCODED_KEY = "" # 在此填入 Key，或使用 Streamlit Secrets
+HARDCODED_KEY = "" # 留空，使用 Streamlit Secrets
 
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
@@ -74,7 +75,7 @@ with st.sidebar:
             ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
             label_visibility="collapsed"
         )
-        # 🟢 删除了联网开关，界面更简洁
+        # 🟢 移除了联网开关，默认就是开启的
         temperature = st.slider("创造力", 0.0, 2.0, 0.7)
 
     st.divider()
@@ -155,20 +156,17 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# --- 初始化模型 (终极修复版) ---
+# --- 初始化模型 (核心修复区域) ---
 try:
-    # 联网搜索配置
-    tools_config = None
-    if enable_search:
-        # 【核心修复】
-        # 不使用字典写法，而是直接创建一个 Tool 的底层对象。
-        # 这样 SDK 就不会把它误判为"自定义函数"而报错了。
-        # 同时，这会生成服务器要求的 "google_search" 字段，解决 400 报错。
-        tools_config = [
-            protos.Tool(
-                google_search=protos.GoogleSearch()
-            )
-        ]
+    # 🟢 修复1：直接使用 protos 绕过 SDK 字典检查 (解决 Unknown field 报错)
+    # 🟢 修复2：不再判断 if enable_search，直接默认开启 (解决 NameError 报错)
+    
+    # 定义工具：永远开启 Google 搜索
+    tools_config = [
+        protos.Tool(
+            google_search=protos.GoogleSearch()
+        )
+    ]
 
     generation_config = {"temperature": temperature}
     
@@ -177,14 +175,13 @@ try:
         generation_config=generation_config,
         tools=tools_config
     )
-    # 注意：开启联网时，start_chat 依然支持 stream=True，但在某些旧模型可能受限
-    # 2.5-flash / 2.0-flash 对此支持很好
+    
     chat = model.start_chat(history=[])
+
 except Exception as e:
     st.error(f"模型配置错误: {e}")
-    st.caption(f"当前 SDK 版本: {genai.__version__}")
+    st.caption(f"SDK Version: {genai.__version__}")
     st.stop()
-
 
 # --- 聊天显示 ---
 for msg in current_session['history']:
@@ -271,5 +268,3 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
-
-
