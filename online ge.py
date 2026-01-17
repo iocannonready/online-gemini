@@ -3,12 +3,12 @@ import os
 import time
 import shutil
 import uuid
-# 使用 2026 最新版 SDK
+# 核心：使用 2026 最新版 SDK
 from google import genai
 from google.genai import types
 
 # ================= 0. 版本元数据 =================
-APP_VERSION = "v4.0.3-PRO"
+APP_VERSION = "v4.0.4-PRO"
 BUILD_DATE = "2026-01-17"
 
 # ================= 1. 初始化页面与安全配置 =================
@@ -18,7 +18,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 安全读取 API KEY ---
+# 安全读取 Key
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
@@ -30,14 +30,13 @@ if "all_sessions" not in st.session_state:
     st.session_state.all_sessions = {
         default_id: {
             "title": "新对话", 
-            "history": [], 
-            "files": [], 
+            "history": [], # 存储格式：{"role": str, "parts": list}
+            "files": [],   # 存储 File 对象引用
             "processed": False 
         }
     }
     st.session_state.current_session_id = default_id
 
-# 获取当前会话数据
 def get_current_session():
     sid = st.session_state.current_session_id
     if sid not in st.session_state.all_sessions:
@@ -50,28 +49,23 @@ current_session = get_current_session()
 # ================= 2. 侧边栏 =================
 with st.sidebar:
     st.title("🦁 凶哥哥的 AI")
-    st.status(f"运行中 | {APP_VERSION}", state="complete")
+    st.status(f"v4.0.4 稳定版", state="complete")
     
     with st.expander("⚙️ 模型参数", expanded=True):
         model_list = [
-            "gemini-1.5-pro",           # 处理 20-30 张文字图片首选
-            "gemini-2.5-flash",         # 2026 稳定主力
-            "gemini-3-flash-preview",   # 最新极速模型
-            "gemini-2.0-flash",         # 经典型号
+            "gemini-1.5-pro",           # OCR 识图首选
+            "gemini-2.5-flash",         # 2026 主力
+            "gemini-3-flash-preview",   # 最新极速
         ]
         selected_model = st.selectbox("选择模型", model_list, index=0)
-        temperature = st.slider("创造力", 0.0, 2.0, 0.7)
-        enable_search = st.toggle("🌍 联网搜索", value=True)
+        temperature = st.slider("创造力", 0.0, 2.0, 0.5) # 处理文档建议调低
+        enable_search = st.toggle("🌍 开启联网搜索", value=True)
 
     st.divider()
-
-    # 会话列表
     st.caption("💬 会话管理")
     if st.button("➕ 新建对话", use_container_width=True):
-        nid = str(uuid.uuid4())
-        st.session_state.all_sessions[nid] = {"title": "新对话", "history": [], "files": [], "processed": False}
-        st.session_state.current_session_id = nid
-        st.rerun()
+        nid = str(uuid.uuid4()); st.session_state.all_sessions[nid] = {"title": "新对话", "history": [], "files": [], "processed": False}
+        st.session_state.current_session_id = nid; st.rerun()
 
     for sid in list(st.session_state.all_sessions.keys()):
         sess = st.session_state.all_sessions[sid]
@@ -87,36 +81,36 @@ with st.sidebar:
                 if st.button("🗑️", key=f"d_{sid}"):
                     if len(st.session_state.all_sessions) > 1: del st.session_state.all_sessions[sid]; st.rerun()
 
-    # 版本显示
-    st.markdown(f"<div style='position: fixed; bottom: 10px; font-size: 11px; color: gray;'>Version: {APP_VERSION} | SDK: {genai.__version__}</div>", unsafe_allow_html=True)
-
 # ================= 3. 核心功能函数 =================
 
 def get_client():
     if not API_KEY:
-        st.error("❌ 未检测到 API KEY。请检查 Secrets。")
+        st.error("❌ 未检测到 API KEY")
         return None
     return genai.Client(api_key=API_KEY)
 
-def upload_handler_v4(client, files):
+def upload_and_notify(client, files):
+    """上传并插入永久通知"""
     temp_dir = "cloud_tmp"
     shutil.rmtree(temp_dir, ignore_errors=True)
     os.makedirs(temp_dir)
     
     uploaded_refs = []
-    with st.status("🚀 正在深度解析附件...", expanded=True) as status:
+    file_names = []
+    
+    with st.status("🚀 附件解析中...", expanded=True) as status:
         local_paths = []
         for f in files:
-            p = os.path.join(temp_dir, f.name)
+            p = os.path.join(temp_dir, f.name); file_names.append(f.name)
             with open(p, "wb") as b: b.write(f.getbuffer())
             local_paths.append(p)
-        local_paths.sort() # 保证页码顺序
+        local_paths.sort()
         
         for path in local_paths:
             try:
                 r = client.files.upload(path=path)
                 uploaded_refs.append(r)
-                st.write(f"✅ 已载入: {os.path.basename(path)}")
+                st.write(f"✅ 已就绪: {os.path.basename(path)}")
             except Exception as e: st.error(f"出错: {e}")
         
         while True:
@@ -125,54 +119,44 @@ def upload_handler_v4(client, files):
                 if client.files.get(name=r.name).state.name == "PROCESSING":
                     ready = False; break
             if ready: break
-            time.sleep(2)
-        status.update(label="✅ 附件解析完成", state="complete", expanded=False)
+            time.sleep(1)
+        status.update(label="✅ 解析完成", state="complete", expanded=False)
+    
+    # 插入永久历史提示
+    hint_text = f"📎 **系统：已成功挂载 {len(file_names)} 个附件**\n\n" + "\n".join([f"- `{n}`" for n in file_names])
+    current_session["history"].append({"role": "system_info", "content": hint_text})
     
     shutil.rmtree(temp_dir, ignore_errors=True)
     return uploaded_refs
 
-# ================= 4. 主对话界面 =================
+# ================= 4. 对话逻辑 =================
 
 client = get_client()
 if client:
-    # 1. 渲染历史
+    # 1. 渲染历史 (支持多模态内容渲染)
     for m in current_session["history"]:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
+        with st.chat_message("assistant" if m["role"] in ["model", "system_info"] else "user"):
+            st.markdown(m["content"])
 
-    # 2. 底部控制区 (文件+输入)
+    # 2. 底部极简上传区与输入框
     chat_prompt = None
-    
     with st.container():
-        # 附件状态栏
-        if current_session["files"]:
-            st.info(f"📚 当前挂载了 {len(current_session['files'])} 张图片。AI 将在下一轮对话中阅读它们。")
-            if st.button("🗑️ 清空附件"):
-                current_session["files"] = []; current_session["processed"] = False; st.rerun()
-
-        # 精简版上传布局：[浏览按钮] [极窄拖拽区] [聊天框]
-        # 由于 Streamlit 布局限制，我们使用 3 列结构实现“紧凑型”
-        col_btn, col_drag, col_chat = st.columns([0.1, 0.15, 0.75])
+        # 唯一的上传区域：Browse + Drag
+        files = st.file_uploader(
+            "拖拽图片至此或点击上传 (支持批量)", 
+            accept_multiple_files=True, 
+            key="main_uploader",
+            label_visibility="collapsed" # 隐藏标签，保持极简
+        )
         
-        with col_btn:
-            # 这是一个纯按钮，点击打开 popover 里的文件浏览
-            with st.popover("📎", help="点击浏览文件"):
-                files = st.file_uploader("选择材料", accept_multiple_files=True, label_visibility="collapsed")
-                if files and st.button("确认分析"):
-                    current_session["files"] = upload_handler_v4(client, files)
-                    current_session["processed"] = False
-                    st.rerun()
-        
-        with col_drag:
-            # 这是一个极小化的拖拽区，不写文字，只留一个窄条
-            drag_files = st.file_uploader("Drag", accept_multiple_files=True, label_visibility="collapsed", key="drag_zone")
-            if drag_files:
-                 if st.button("处理拖入文件", use_container_width=True):
-                    current_session["files"] = upload_handler_v4(client, drag_files)
-                    current_session["processed"] = False
-                    st.rerun()
+        # 只要有新文件上传且未处理
+        if files and not current_session["files"]:
+            if st.button("🚀 确认并开始分析附件", use_container_width=True, type="primary"):
+                current_session["files"] = upload_and_notify(client, files)
+                current_session["processed"] = False
+                st.rerun()
 
-        with col_chat:
-            chat_prompt = st.chat_input("输入问题... (例如：整理这几张图的内容)")
+        chat_prompt = st.chat_input("请总结附件内容或针对细节提问...")
 
     # 3. 对话执行逻辑
     if chat_prompt:
@@ -183,39 +167,45 @@ if client:
         with st.chat_message("assistant"):
             box = st.empty(); full = ""
             
-            # --- 核心改进：显式多模态构造 ---
-            payload = []
+            # --- 关键重构：构造多模态 Payload ---
+            # 这一轮真正要发给 API 的内容
+            current_message_parts = []
             
-            # 如果有文件且还没被 AI 确认读过，注入提醒
+            # 如果有文件且还没被标记为已处理
             if current_session["files"] and not current_session["processed"]:
-                # 在发送文件前，先塞一个“隐形”提示，增强 AI 的附件感知力
-                payload.append("【系统通知：以下是用户上传的附件材料，请仔细阅读并根据此内容回答问题】")
-                payload.extend(current_session["files"])
+                # 注入强力系统指令，强制 AI 关联附件
+                current_message_parts.append(types.Part(text="[IMPORTANT SYSTEM INSTRUCTION] User has provided files below. Read them carefully and use them as the primary context for the following question."))
+                # 转换所有文件对象为 Part
+                for f_ref in current_session["files"]:
+                    current_message_parts.append(f_ref) # SDK 会自动识别为 File Part
             
-            # 加入用户的问题
-            payload.append(current_session["history"][-1]["content"])
+            # 加入用户最新文字提问
+            current_message_parts.append(types.Part(text=current_session["history"][-1]["content"]))
 
             try:
-                # 构造对话历史
+                # --- 历史记录转换器 (核心修复点) ---
+                # 将 session_state 里的简易历史转换为 API 需要的复合 Parts 结构
                 h_objs = []
                 for h in current_session["history"][:-1]:
-                    h_objs.append(types.Content(
-                        role="user" if h["role"] == "user" else "model",
-                        parts=[types.Part(text=h["content"])]
-                    ))
+                    if h["role"] == "system_info":
+                        # 系统提示作为 model 的一段确认信息存入，不作为 user 输入
+                        h_objs.append(types.Content(role="model", parts=[types.Part(text=h["content"])]))
+                    else:
+                        h_objs.append(types.Content(
+                            role="user" if h["role"] == "user" else "model",
+                            parts=[types.Part(text=h["content"])]
+                        ))
 
-                # 联网工具
                 tools = [types.Tool(google_search=types.GoogleSearch())] if enable_search else []
 
-                # 创建 Chat
                 chat_obj = client.chats.create(
                     model=selected_model,
                     history=h_objs,
                     config=types.GenerateContentConfig(temperature=temperature, tools=tools)
                 )
                 
-                # 开始生成
-                response = chat_obj.send_message_stream(message=payload)
+                # 发送（包含所有附件）
+                response = chat_obj.send_message_stream(message=current_message_parts)
                 for chunk in response:
                     if chunk.text:
                         full += chunk.text
@@ -223,13 +213,13 @@ if client:
                 
                 box.markdown(full)
                 
-                # 只有成功完成后，才标记文件已处理，并记录历史
+                # 成功后标记
                 current_session["processed"] = True 
-                current_session["history"].append({"role": "assistant", "content": full})
+                current_session["history"].append({"role": "model", "content": full})
                 
-                # 自动标题
-                if len(current_session["history"]) == 2:
-                    current_session["title"] = current_session["history"][0]["content"][:10]
+                # 自动改名
+                if len(current_session["history"]) <= 3: # 考虑进了 system_info
+                    current_session["title"] = chat_prompt[:10]
                 st.rerun()
 
             except Exception as e:
