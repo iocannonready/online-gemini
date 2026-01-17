@@ -174,4 +174,36 @@ if client:
                 # 构建当前消息
                 last_msg = current_session["history"][-1]
                 payload = []
-                for p in last_msg["parts
+                for p in last_msg["parts"]:
+                    if "text" in p: payload.append(types.Part(text=p["text"]))
+                    elif "file_uri" in p: payload.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
+
+                add_log(f"📡 正在向 API 发送 Payload，内含 Part 数量: {len(payload)}")
+                
+                # 强效测试指令
+                test_instruction = "你现在的任务是核对视觉链路。请第一句回答：'报告！我看到了 X 个文件对象'。如果 X 等于 0，说明链路断了。"
+
+                chat_session = client.chats.create(
+                    model=selected_model,
+                    history=history_objs,
+                    config=types.GenerateContentConfig(
+                        system_instruction=test_instruction,
+                        temperature=0.0
+                    )
+                )
+                
+                response = chat_session.send_message_stream(message=payload)
+                for chunk in response:
+                    if chunk.text:
+                        full += chunk.text; box.markdown(full + "▌")
+                
+                box.markdown(full)
+                current_session["history"].append({"role": "model", "parts": [{"text": full}]})
+                add_log("✅ AI 已完成回复")
+                st.rerun()
+            except Exception as e:
+                add_log(f"❌ 对话层崩溃: {str(e)}")
+                st.error(f"对话报错: {e}")
+
+else:
+    st.warning("👈 请先配置 API Key")
