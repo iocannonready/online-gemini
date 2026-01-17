@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # ================= 0. 版本元数据 =================
-APP_VERSION = "v4.2.8-PRO"
+APP_VERSION = "v4.2.9-PRO"
 BUILD_DATE = "2026-01-18"
 
 # ================= 1. 页面初始化 =================
@@ -19,7 +19,6 @@ try:
 except:
     API_KEY = None
 
-# 初始化 Session
 if "all_sessions" not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state.all_sessions = {
@@ -41,7 +40,7 @@ current_session = get_current_session()
 # ================= 2. 侧边栏 =================
 with st.sidebar:
     st.title("🦁 凶哥哥的 AI")
-    st.status(f"v4.2.8 | 自动视觉增强版", state="complete")
+    st.status(f"v4.2.9 | 编码免疫版", state="complete")
     
     with st.expander("⚙️ 模型配置", expanded=True):
         model_list = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
@@ -69,30 +68,49 @@ with st.sidebar:
                 if st.button("🗑️ 删除", key=f"d_{sid}"):
                     if len(st.session_state.all_sessions) > 1: del st.session_state.all_sessions[sid]; st.rerun()
 
-# ================= 3. 核心功能函数 =================
+    st.markdown(f"<div style='position: fixed; bottom: 10px; font-size: 11px; color: gray;'>Build: {APP_VERSION}</div>", unsafe_allow_html=True)
 
-def auto_upload_handler(client, files):
-    """无需点按钮，自动上传并锁定状态"""
+# ================= 3. 核心功能函数 (编码加固版) =================
+
+def safe_upload_handler(client, files):
+    """
+    文件名脱敏上传：解决中文文件名导致的 'ascii' codec 报错
+    """
     temp_dir = "cloud_tmp"
     shutil.rmtree(temp_dir, ignore_errors=True); os.makedirs(temp_dir)
     file_metas = []
     
-    with st.status("🛸 AI 正在扫描附件通道...", expanded=True) as status:
-        local_files = []
-        for f in files:
-            p = os.path.join(temp_dir, f.name)
+    with st.status("🚀 正在安全挂载视觉对象...", expanded=True) as status:
+        # 1. 物理保存：使用安全的文件名（纯数字）
+        st.write("正在预处理中文文件名...")
+        for i, f in enumerate(files):
+            # 提取后缀名
+            ext = os.path.splitext(f.name)[1].lower()
+            if not ext: ext = ".pdf" if f.type == "application/pdf" else ".jpg"
+            
+            # 使用简单的安全名，彻底避开 ASCII 编码问题
+            safe_name = f"upload_{i}{ext}"
+            p = os.path.join(temp_dir, safe_name)
+            
             with open(p, "wb") as b: b.write(f.getbuffer())
-            local_files.append(p)
-        local_files.sort()
-
-        for path in local_files:
+            
+            # 2. 上传到 Google
             try:
-                m_type = "application/pdf" if path.lower().endswith(".pdf") else "image/jpeg"
-                r = client.files.upload(file=path, config={"mime_type": m_type})
-                file_metas.append({"uri": r.uri, "mime_type": r.mime_type, "name": os.path.basename(path)})
-                st.write(f"✔️ {os.path.basename(path)} 已就绪")
-            except Exception as e: st.error(f"传输失败: {e}")
+                m_type = "application/pdf" if ext == '.pdf' else "image/jpeg"
+                # 传入 safe_name 给 Google，不会报错
+                r = client.files.upload(file=p, config={"mime_type": m_type})
+                
+                # 记录时：uri 用 Google 的，name 依然存用户看到的中文名
+                file_metas.append({
+                    "uri": r.uri, 
+                    "mime_type": r.mime_type, 
+                    "display_name": f.name # 保留中文名用于显示
+                })
+                st.write(f"✔️ {f.name} 已安全入库")
+            except Exception as e:
+                st.error(f"传输失败 ({f.name}): {str(e)}")
         
+        # 3. 状态检查
         while True:
             ready = True
             for meta in file_metas:
@@ -101,7 +119,7 @@ def auto_upload_handler(client, files):
                     ready = False; break
             if ready: break
             time.sleep(2)
-        status.update(label="✅ 视觉对象已挂载", state="complete", expanded=False)
+        status.update(label="✅ 视觉通道已建立", state="complete", expanded=False)
     
     shutil.rmtree(temp_dir, ignore_errors=True)
     return file_metas
@@ -111,48 +129,45 @@ def auto_upload_handler(client, files):
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
 if client:
-    # 1. 渲染历史
+    # 渲染历史
     for m in current_session["history"]:
         with st.chat_message("assistant" if m["role"] == "model" else "user"):
             for part in m["parts"]:
                 if "text" in part: st.markdown(part["text"])
 
-    # 2. 底部控制区 (自动上传逻辑)
     chat_prompt = None
     with st.container():
-        # 如果有文件挂载，显示状态
+        # 显示已挂载文件
         if current_session["files_meta"]:
             cols = st.columns([0.8, 0.2])
             cols[0].success(f"📎 视觉通道已锁定 {len(current_session['files_meta'])} 个文件")
             if cols[1].button("🗑️ 清空"):
                 current_session["files_meta"] = []; current_session["files_processed"] = False; st.rerun()
 
-        # 上传区 (只要有文件变动，就会触发上传逻辑)
+        # 上传区
         up_fs = st.file_uploader(
             "PDF 或 图片 (拖入即自动分析)", 
             type=['pdf', 'png', 'jpg', 'jpeg'], 
             accept_multiple_files=True, 
-            key="v16_up", 
+            key="v17_up", 
             label_visibility="collapsed"
         )
         
-        # 核心逻辑：如果检测到新上传，且当前会话没存过，则自动开始上传
         if up_fs and not current_session["files_meta"]:
-            current_session["files_meta"] = auto_upload_handler(client, up_fs)
+            # 使用修复后的安全上传函数
+            current_session["files_meta"] = safe_upload_handler(client, up_fs)
             current_session["files_processed"] = False
             st.rerun()
 
         chat_prompt = st.chat_input("针对附件提问（例如：总结全文）")
 
-    # 3. 对话执行
     if chat_prompt:
         user_parts = []
-        # 第一轮发送：强制将文件 URI 放在文字前面
         if current_session["files_meta"] and not current_session["files_processed"]:
             for f in current_session["files_meta"]:
-                user_parts.append({"file_uri": f["uri"], "mime_type": f["mime_type"], "name": f["name"]})
-            # 加入视觉觉醒指令
-            user_parts.append({"text": f"系统指令：我已为你提供 {len(current_session['files_meta'])} 份文档/图片。请将其作为核心依据，开始分析。"})
+                user_parts.append({"file_uri": f["uri"], "mime_type": f["mime_type"]})
+            # 强化指令
+            user_parts.append({"text": f"[VISION_ACTIVE] 我提供了 {len(current_session['files_meta'])} 个关键文档。请深度扫描并基于此回答。"})
             current_session["files_processed"] = True
         
         user_parts.append({"text": chat_prompt})
@@ -172,10 +187,9 @@ if client:
                         elif "file_uri" in p: parts_objs.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
                     history_objs.append(types.Content(role=h["role"], parts=parts_objs))
 
-                # 构建当前 Payload
-                last_user_msg = current_session["history"][-1]
+                # 构建 Payload
                 current_payload = []
-                for p in last_user_msg["parts"]:
+                for p in current_session["history"][-1]["parts"]:
                     if "text" in p: current_payload.append(types.Part(text=p["text"]))
                     elif "file_uri" in p: current_payload.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
 
@@ -185,7 +199,7 @@ if client:
                     model=selected_model,
                     history=history_objs,
                     config=types.GenerateContentConfig(
-                        system_instruction="你是一个全能文档分析专家。如果你在消息中收到了 file_uri，这意味着你有权直接通过视觉接口访问这些内容。绝对不要回答我看不到文件。请通过深度视觉扫描给出答案。",
+                        system_instruction="你是一个全能文档分析专家。无论收到图片还是PDF，你都能通过视觉接口精准识别。严禁回答我看不到文件。",
                         temperature=temperature,
                         tools=tools
                     )
@@ -206,4 +220,3 @@ if client:
                 current_session["files_processed"] = False
 else:
     st.warning("👈 请在 Secrets 中配置 API Key")
-
