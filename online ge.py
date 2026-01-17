@@ -4,12 +4,10 @@ import time
 import shutil
 import google.generativeai as genai
 import uuid
-# 【新增】引入底层协议库，彻底解决 Unknown field 报错
-from google.generativeai import protos 
 
 # ================= 1. 配置区域 =================
 
-HARDCODED_KEY = "" # 留空，使用 Streamlit Secrets
+HARDCODED_KEY = "" # 在此填入 Key，或使用 Streamlit Secrets
 
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
@@ -75,7 +73,6 @@ with st.sidebar:
             ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
             label_visibility="collapsed"
         )
-        # 🟢 移除了联网开关，默认就是开启的
         temperature = st.slider("创造力", 0.0, 2.0, 0.7)
 
     st.divider()
@@ -156,11 +153,10 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# --- 初始化模型 ---
+# --- 初始化模型 (已整合你的最新修改) ---
 try:
     # 联网配置
-    # 注意：这里我们使用标准的字典写法。
-    # 只要你完成了"第一步"的依赖更新，这个写法既不会报本地错，也不会报服务器错。
+    # 只有当你正确更新了 requirements.txt 并重新部署后，这里才不会报错
     tools_config = [
         {"google_search": {}}
     ]
@@ -174,17 +170,23 @@ try:
     )
     chat = model.start_chat(history=[])
 
-    # 在侧边栏显示状态，方便你确认联网是否成功
+    # 状态指示器
     with st.sidebar:
-        st.success("✅ 联网搜索组件已挂载")
+        st.success("✅ 联网搜索已挂载")
 
 except Exception as e:
-    st.error(f"❌ 联网配置失败，已降级为离线模式。")
-    st.error(f"报错信息: {e}")
-    # 显示详细的版本信息，帮你抓出"真凶"
-    import google.ai.generativelanguage as gl
-    st.caption(f"GenerativeAI Ver: {genai.__version__}")
-    st.caption(f"GenerativeLanguage Ver: {gl.__version__} (必须 >= 0.6.9)")
+    st.error(f"❌ 联网配置失败")
+    st.error(f"错误详情: {e}")
+    
+    # 诊断信息
+    try:
+        import google.ai.generativelanguage as gl
+        gl_ver = gl.__version__
+    except:
+        gl_ver = "未安装或版本过低"
+        
+    st.caption(f"SDK 版本检测:")
+    st.code(f"google-generativeai: {genai.__version__}\ngoogle-ai-generativelanguage: {gl_ver}\n(要求: >= 0.6.9)")
     st.stop()
 
 # --- 聊天显示 ---
@@ -272,5 +274,3 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
-
-
