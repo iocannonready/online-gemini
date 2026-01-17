@@ -156,24 +156,14 @@ if not configure_env():
     st.warning("⚠️ 请配置 API Key")
     st.stop()
 
-# --- 初始化模型 (通用兼容版) ---
+# --- 初始化模型 ---
 try:
     # 联网配置
-    tools_config = []
-    
-    # 【核心修改】
-    # 既然找不到类，也不认字典，我们就直接利用 Tool 的构造函数。
-    # 这种写法是 Protobuf 的标准特性：如果有 google_search 字段，就用空字典 {} 初始化它。
-    # 如果底层库实在太旧不支持 google_search 字段，catch 里的报错会告诉我们需要升级依赖。
-    try:
-        if enable_search:
-            tools_config = [
-                protos.Tool(google_search={})
-            ]
-    except Exception as e:
-        # 如果报错说 Tool 没有 google_search 字段，说明依赖库实在太老了
-        st.warning("⚠️ 警告：云端依赖库版本过低，联网搜索暂时无法启用。建议在 requirements.txt 添加 google-ai-generativelanguage>=0.6.6")
-        tools_config = None # 回退到不联网模式
+    # 注意：这里我们使用标准的字典写法。
+    # 只要你完成了"第一步"的依赖更新，这个写法既不会报本地错，也不会报服务器错。
+    tools_config = [
+        {"google_search": {}}
+    ]
 
     generation_config = {"temperature": temperature}
     
@@ -184,9 +174,17 @@ try:
     )
     chat = model.start_chat(history=[])
 
+    # 在侧边栏显示状态，方便你确认联网是否成功
+    with st.sidebar:
+        st.success("✅ 联网搜索组件已挂载")
+
 except Exception as e:
-    st.error(f"模型配置严重错误: {e}")
-    st.caption(f"SDK Version: {genai.__version__}")
+    st.error(f"❌ 联网配置失败，已降级为离线模式。")
+    st.error(f"报错信息: {e}")
+    # 显示详细的版本信息，帮你抓出"真凶"
+    import google.ai.generativelanguage as gl
+    st.caption(f"GenerativeAI Ver: {genai.__version__}")
+    st.caption(f"GenerativeLanguage Ver: {gl.__version__} (必须 >= 0.6.9)")
     st.stop()
 
 # --- 聊天显示 ---
@@ -274,4 +272,5 @@ if current_session['history'] and current_session['history'][-1]['role'] == 'use
             
         except Exception as e:
             st.error(f"出错: {e}")
+
 
