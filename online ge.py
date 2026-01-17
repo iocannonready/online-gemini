@@ -3,22 +3,22 @@ import os
 import time
 import shutil
 import uuid
-# 核心：使用 2026 官方最新 SDK
 from google import genai
 from google.genai import types
 
-# ================= 0. 版本元数据 =================
-APP_VERSION = "v4.2.9-PRO"
+# ================= 0. 版本与配置 =================
+APP_VERSION = "v4.3.0-FINAL"
 BUILD_DATE = "2026-01-18"
 
-# ================= 1. 页面初始化 =================
 st.set_page_config(page_title=f"凶哥哥的 AI {APP_VERSION}", page_icon="🦁", layout="wide")
 
+# 安全读取 Key
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
     API_KEY = None
 
+# 初始化 Session
 if "all_sessions" not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state.all_sessions = {
@@ -37,16 +37,20 @@ def get_current_session():
 
 current_session = get_current_session()
 
-# ================= 2. 侧边栏 =================
+# ================= 1. 侧边栏 =================
 with st.sidebar:
     st.title("🦁 凶哥哥的 AI")
-    st.status(f"v4.2.9 | 编码免疫版", state="complete")
+    st.caption(f"官方最新 SDK 驱动 | {APP_VERSION}")
     
-    with st.expander("⚙️ 模型配置", expanded=True):
-        model_list = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    with st.expander("⚙️ 核心配置", expanded=True):
+        # 仅保留确认可用的高性能模型
+        model_list = [
+            "gemini-2.5-flash",         # 2026 稳定主力，推荐用于 20 张图片整理
+            "gemini-3-flash-preview",   # 2026 最新极速预览版
+        ]
         selected_model = st.selectbox("选择模型", model_list, index=0)
-        temperature = st.slider("创造力", 0.0, 2.0, 0.0) 
-        enable_search = st.toggle("🌍 开启联网搜索", value=True)
+        temperature = st.slider("创造力", 0.0, 1.0, 0.2) # 文档分析建议保持低位
+        st.info("💡 联网搜索已默认后台开启")
 
     st.divider()
     if st.button("➕ 新建对话", use_container_width=True):
@@ -68,49 +72,36 @@ with st.sidebar:
                 if st.button("🗑️ 删除", key=f"d_{sid}"):
                     if len(st.session_state.all_sessions) > 1: del st.session_state.all_sessions[sid]; st.rerun()
 
-    st.markdown(f"<div style='position: fixed; bottom: 10px; font-size: 11px; color: gray;'>Build: {APP_VERSION}</div>", unsafe_allow_html=True)
-
-# ================= 3. 核心功能函数 (编码加固版) =================
+# ================= 2. 核心功能函数 =================
 
 def safe_upload_handler(client, files):
     """
-    文件名脱敏上传：解决中文文件名导致的 'ascii' codec 报错
+    极简自动上传：解决编码问题并提供实时反馈
     """
     temp_dir = "cloud_tmp"
     shutil.rmtree(temp_dir, ignore_errors=True); os.makedirs(temp_dir)
     file_metas = []
     
-    with st.status("🚀 正在安全挂载视觉对象...", expanded=True) as status:
-        # 1. 物理保存：使用安全的文件名（纯数字）
-        st.write("正在预处理中文文件名...")
+    # 自动处理流程
+    with st.status("🛸 AI 正在扫描附件并建立连接...", expanded=True) as status:
         for i, f in enumerate(files):
-            # 提取后缀名
+            # 编码安全：强制重命名
             ext = os.path.splitext(f.name)[1].lower()
             if not ext: ext = ".pdf" if f.type == "application/pdf" else ".jpg"
-            
-            # 使用简单的安全名，彻底避开 ASCII 编码问题
-            safe_name = f"upload_{i}{ext}"
+            safe_name = f"up_{i}{ext}"
             p = os.path.join(temp_dir, safe_name)
             
             with open(p, "wb") as b: b.write(f.getbuffer())
             
-            # 2. 上传到 Google
             try:
                 m_type = "application/pdf" if ext == '.pdf' else "image/jpeg"
-                # 传入 safe_name 给 Google，不会报错
                 r = client.files.upload(file=p, config={"mime_type": m_type})
-                
-                # 记录时：uri 用 Google 的，name 依然存用户看到的中文名
-                file_metas.append({
-                    "uri": r.uri, 
-                    "mime_type": r.mime_type, 
-                    "display_name": f.name # 保留中文名用于显示
-                })
-                st.write(f"✔️ {f.name} 已安全入库")
+                file_metas.append({"uri": r.uri, "mime_type": r.mime_type, "display_name": f.name})
+                st.write(f"✔️ {f.name} 解析成功")
             except Exception as e:
-                st.error(f"传输失败 ({f.name}): {str(e)}")
+                st.error(f"传输中断: {f.name}")
         
-        # 3. 状态检查
+        # 轮询 ACTIVE
         while True:
             ready = True
             for meta in file_metas:
@@ -118,13 +109,13 @@ def safe_upload_handler(client, files):
                 if client.files.get(name=f_id).state.name == "PROCESSING":
                     ready = False; break
             if ready: break
-            time.sleep(2)
-        status.update(label="✅ 视觉通道已建立", state="complete", expanded=False)
+            time.sleep(1.5)
+        status.update(label="✅ 视觉通道已就绪", state="complete", expanded=False)
     
     shutil.rmtree(temp_dir, ignore_errors=True)
     return file_metas
 
-# ================= 4. 主对话逻辑 =================
+# ================= 3. 主界面对话 =================
 
 client = genai.Client(api_key=API_KEY) if API_KEY else None
 
@@ -135,39 +126,42 @@ if client:
             for part in m["parts"]:
                 if "text" in part: st.markdown(part["text"])
 
+    # 底部控制区（全新交互布局）
     chat_prompt = None
     with st.container():
-        # 显示已挂载文件
+        # --- 附件预览卡片区 ---
         if current_session["files_meta"]:
-            cols = st.columns([0.8, 0.2])
-            cols[0].success(f"📎 视觉通道已锁定 {len(current_session['files_meta'])} 个文件")
-            if cols[1].button("🗑️ 清空"):
-                current_session["files_meta"] = []; current_session["files_processed"] = False; st.rerun()
+            with st.container(border=True):
+                c_1, c_2 = st.columns([0.85, 0.15])
+                with c_1:
+                    # 横向显示附件标签
+                    st.markdown(" ".join([f"`📎 {f['display_name']}`" for f in current_session["files_meta"]]))
+                with c_2:
+                    if st.button("🗑️ 清空", use_container_width=True):
+                        current_session["files_meta"] = []; current_session["files_processed"] = False; st.rerun()
 
-        # 上传区
-        up_fs = st.file_uploader(
-            "PDF 或 图片 (拖入即自动分析)", 
-            type=['pdf', 'png', 'jpg', 'jpeg'], 
-            accept_multiple_files=True, 
-            key="v17_up", 
-            label_visibility="collapsed"
+        # --- 自动上传组件 ---
+        new_files = st.file_uploader(
+            "Upload", type=['pdf', 'png', 'jpg', 'jpeg'], accept_multiple_files=True, 
+            key="v18_up", label_visibility="collapsed"
         )
         
-        if up_fs and not current_session["files_meta"]:
-            # 使用修复后的安全上传函数
-            current_session["files_meta"] = safe_upload_handler(client, up_fs)
+        # 交互逻辑：如果有新文件上传，且当前槽位为空，则自动触发
+        if new_files and not current_session["files_meta"]:
+            current_session["files_meta"] = safe_upload_handler(client, new_files)
             current_session["files_processed"] = False
             st.rerun()
 
-        chat_prompt = st.chat_input("针对附件提问（例如：总结全文）")
+        chat_prompt = st.chat_input("询问 AI 关于附件的任何问题...")
 
+    # 对话执行
     if chat_prompt:
         user_parts = []
+        # 第一轮包含文件
         if current_session["files_meta"] and not current_session["files_processed"]:
             for f in current_session["files_meta"]:
                 user_parts.append({"file_uri": f["uri"], "mime_type": f["mime_type"]})
-            # 强化指令
-            user_parts.append({"text": f"[VISION_ACTIVE] 我提供了 {len(current_session['files_meta'])} 个关键文档。请深度扫描并基于此回答。"})
+            user_parts.append({"text": f"[系统指令] 用户提供了 {len(current_session['files_meta'])} 份材料。请优先根据附件回答。"})
             current_session["files_processed"] = True
         
         user_parts.append({"text": chat_prompt})
@@ -187,21 +181,20 @@ if client:
                         elif "file_uri" in p: parts_objs.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
                     history_objs.append(types.Content(role=h["role"], parts=parts_objs))
 
-                # 构建 Payload
+                # 当前 Payload
                 current_payload = []
                 for p in current_session["history"][-1]["parts"]:
                     if "text" in p: current_payload.append(types.Part(text=p["text"]))
                     elif "file_uri" in p: current_payload.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
 
-                tools = [types.Tool(google_search=types.GoogleSearch())] if enable_search else []
-                
+                # 创建 Chat (默认隐形开启联网)
                 chat_session = client.chats.create(
                     model=selected_model,
                     history=history_objs,
                     config=types.GenerateContentConfig(
-                        system_instruction="你是一个全能文档分析专家。无论收到图片还是PDF，你都能通过视觉接口精准识别。严禁回答我看不到文件。",
+                        system_instruction="你是一个全能文档分析专家。请精准识别用户提供的图片或PDF。严禁说你看不到文件。如有必要，请调用联网搜索补充背景。",
                         temperature=temperature,
-                        tools=tools
+                        tools=[types.Tool(google_search=types.GoogleSearch())]
                     )
                 )
                 
