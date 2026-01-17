@@ -2,275 +2,193 @@ import streamlit as st
 import os
 import time
 import shutil
-import google.generativeai as genai
 import uuid
+# 核心：使用新版 SDK
+from google import genai
+from google.genai import types
 
-# ================= 1. 配置区域 =================
+# ================= 1. 初始化与安全配置 =================
 
-HARDCODED_KEY = "" # 在此填入 Key，或使用 Streamlit Secrets
-
+# 优先从 Streamlit Secrets 读取 Key
 try:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    API_KEY = HARDCODED_KEY
+    API_KEY = "" # 本地调试可用，云端必须设在 Secrets 里
 
-st.set_page_config(
-    page_title="AI 助手",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="凶哥哥的 AI", page_icon="🦁", layout="wide")
 
-# ================= 2. 会话管理逻辑 =================
-
+# 状态初始化
 if "all_sessions" not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state.all_sessions = {
-        default_id: {
-            "title": "新对话", 
-            "history": [], 
-            "files": [], 
-            "processed": False 
-        }
+        default_id: {"title": "新对话", "history": [], "files": [], "processed": False}
     }
     st.session_state.current_session_id = default_id
 
-if "trigger_regenerate" not in st.session_state:
-    st.session_state.trigger_regenerate = False
+# 获取当前会话数据
+def get_session():
+    sid = st.session_state.current_session_id
+    if sid not in st.session_state.all_sessions:
+        sid = list(st.session_state.all_sessions.keys())[0]
+        st.session_state.current_session_id = sid
+    return st.session_state.all_sessions[sid]
 
-def create_new_session():
-    new_id = str(uuid.uuid4())
-    st.session_state.all_sessions[new_id] = {
-        "title": "新对话",
-        "history": [],
-        "files": [],
-        "processed": False
-    }
-    st.session_state.current_session_id = new_id
-    st.rerun()
+current_session = get_session()
 
-def delete_session(session_id):
-    if len(st.session_state.all_sessions) > 1:
-        del st.session_state.all_sessions[session_id]
-        if session_id == st.session_state.current_session_id:
-            st.session_state.current_session_id = list(st.session_state.all_sessions.keys())[0]
-        st.rerun()
+# ================= 2. 侧边栏 (云端精简版) =================
 
-def switch_session(session_id):
-    st.session_state.current_session_id = session_id
-    st.rerun()
-
-current_id = st.session_state.current_session_id
-if current_id not in st.session_state.all_sessions:
-    current_id = list(st.session_state.all_sessions.keys())[0]
-    st.session_state.current_session_id = current_id
-current_session = st.session_state.all_sessions[current_id]
-
-# ================= 3. 侧边栏 =================
 with st.sidebar:
+    st.title("🦁 凶哥哥的 AI")
+    st.caption("云端直连模式 (免翻墙)")
+    
     with st.expander("⚙️ 设置与模型", expanded=True):
-        selected_model = st.selectbox(
-            "模型", 
-            ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
-            label_visibility="collapsed"
-        )
+        # 模型列表 (2026年最新)
+        model_list = [
+            "gemini-1.5-flash",        # 免费配额最足
+            "gemini-2.5-pro",           # 20张图片OCR首选
+            "gemini-2.5-flash",         # 最新平衡款
+            "gemini-3.0-flash-preview", # 最新尝鲜款
+        ]
+        selected_model = st.selectbox("选择模型", model_list, index=0)
         temperature = st.slider("创造力", 0.0, 2.0, 0.7)
-
+        # 默认开启联网，不显示开关以保持简洁
+        
     st.divider()
 
-    col_header1, col_header2 = st.columns([4, 1])
-    with col_header1: st.caption("会话列表")
-    with col_header2:
-        if st.button("➕", help="新建对话", use_container_width=True):
-            create_new_session()
+    # 会话管理
+    col_h1, col_h2 = st.columns([4, 1])
+    with col_h1: st.caption("对话列表")
+    with col_h2: 
+        if st.button("➕"):
+            nid = str(uuid.uuid4())
+            st.session_state.all_sessions[nid] = {"title": "新对话", "history": [], "files": [], "processed": False}
+            st.session_state.current_session_id = nid
+            st.rerun()
 
-    session_ids = list(st.session_state.all_sessions.keys())
-    for sess_id in session_ids:
-        sess_data = st.session_state.all_sessions[sess_id]
-        c1, c2 = st.columns([0.85, 0.15])
-        is_active = (sess_id == current_id)
-        btn_type = "primary" if is_active else "secondary"
-        
+    for sid in list(st.session_state.all_sessions.keys()):
+        sess = st.session_state.all_sessions[sid]
+        active = (sid == st.session_state.current_session_id)
+        c1, c2 = st.columns([0.8, 0.2])
         with c1:
-            if st.button(sess_data["title"], key=f"btn_{sess_id}", type=btn_type, use_container_width=True):
-                switch_session(sess_id)
-        
+            if st.button(sess["title"], key=f"s_{sid}", type="primary" if active else "secondary", use_container_width=True):
+                st.session_state.current_session_id = sid
+                st.rerun()
         with c2:
-            with st.popover("⋮", use_container_width=True):
-                st.markdown("#### 管理")
-                new_name = st.text_input("名称", value=sess_data["title"], key=f"input_{sess_id}")
-                if new_name != sess_data["title"]:
-                    st.session_state.all_sessions[sess_id]["title"] = new_name
-                    st.rerun()
-                if st.button("🗑️ 删除", key=f"del_{sess_id}", type="primary"):
-                    delete_session(sess_id)
+            with st.popover("⋮"):
+                new_n = st.text_input("重命名", value=sess["title"], key=f"rn_{sid}")
+                if new_n != sess["title"]: sess["title"] = new_n; st.rerun()
+                if st.button("🗑️", key=f"del_{sid}"):
+                    if len(st.session_state.all_sessions) > 1:
+                        del st.session_state.all_sessions[sid]; st.rerun()
 
-# ================= 4. 功能函数 =================
+# ================= 3. 核心功能 (新版 SDK) =================
 
-def configure_env():
-    if not API_KEY: return False
-    genai.configure(api_key=API_KEY)
-    return True
+def get_client():
+    if not API_KEY:
+        st.error("❌ 请在 Streamlit Secrets 中配置 GOOGLE_API_KEY")
+        return None
+    # 云端不需要 os.environ 代理设置，直接初始化
+    return genai.Client(api_key=API_KEY)
 
-def upload_files(uploaded_files):
-    temp_dir = "cloud_temp"
-    if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir)
+def upload_handler(client, files):
+    temp = "cloud_tmp"
+    if os.path.exists(temp): shutil.rmtree(temp)
+    os.makedirs(temp)
     
     refs = []
     status = st.empty()
-    local_paths = []
-    for f in uploaded_files:
-        path = os.path.join(temp_dir, f.name)
-        with open(path, "wb") as buffer: buffer.write(f.getbuffer())
-        local_paths.append(path)
-    local_paths.sort()
-    
-    for i, path in enumerate(local_paths):
-        status.caption(f"正在上传 {i+1}/{len(local_paths)}...")
+    for i, f in enumerate(files):
+        path = os.path.join(temp, f.name)
+        with open(path, "wb") as b: b.write(f.getbuffer())
+        status.caption(f"正在读取 {f.name}...")
         try:
-            f = genai.upload_file(path)
-            refs.append(f)
-        except Exception as e:
-            st.error(f"上传失败: {e}")
+            res = client.files.upload(path=path)
+            refs.append(res)
+        except Exception as e: st.error(f"上传出错: {e}")
     
     if refs:
-        status.caption("正在解析...")
+        status.caption("AI 正在解析内容...")
         while True:
             ready = True
             for r in refs:
-                if genai.get_file(r.name).state.name == "PROCESSING":
+                if client.files.get(name=r.name).state == "PROCESSING":
                     ready = False; break
             if ready: break
             time.sleep(1)
-            
     status.empty()
-    shutil.rmtree(temp_dir)
     return refs
 
-# ================= 5. 主界面逻辑 =================
+# ================= 4. 对话逻辑 =================
 
-if not configure_env():
-    st.warning("⚠️ 请配置 API Key")
-    st.stop()
+client = get_client()
+if not client: st.stop()
 
-# --- 初始化模型 (已整合你的最新修改) ---
-try:
-    # 联网配置
-    # 只有当你正确更新了 requirements.txt 并重新部署后，这里才不会报错
-    tools_config = [
-        {"google_search": {}}
-    ]
+# 渲染历史
+for m in current_session["history"]:
+    with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    generation_config = {"temperature": temperature}
-    
-    model = genai.GenerativeModel(
-        selected_model,
-        generation_config=generation_config,
-        tools=tools_config
-    )
-    chat = model.start_chat(history=[])
+# 输入区
+with st.container():
+    if current_session["files"]:
+        st.success(f"📎 已挂载 {len(current_session['files'])} 个附件")
+        if st.button("清空附件"):
+            current_session["files"] = []; current_session["processed"] = False; st.rerun()
 
-    # 状态指示器
-    with st.sidebar:
-        st.success("✅ 联网搜索已挂载")
-
-except Exception as e:
-    st.error(f"❌ 联网配置失败")
-    st.error(f"错误详情: {e}")
-    
-    # 诊断信息
-    try:
-        import google.ai.generativelanguage as gl
-        gl_ver = gl.__version__
-    except:
-        gl_ver = "未安装或版本过低"
-        
-    st.caption(f"SDK 版本检测:")
-    st.code(f"google-generativeai: {genai.__version__}\ngoogle-ai-generativelanguage: {gl_ver}\n(要求: >= 0.6.9)")
-    st.stop()
-
-# --- 聊天显示 ---
-for msg in current_session['history']:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "usage" in msg:
-            st.caption(f"📊 {msg['usage']}")
-
-# --- 底部输入区 ---
-bottom_container = st.container()
-with bottom_container:
-    if current_session['files']:
-        col_info, col_clear = st.columns([8, 2])
-        with col_info:
-            st.success(f"📎 已挂载 {len(current_session['files'])} 个文件")
-        with col_clear:
-            if st.button("卸载文件", key="clear_files"):
-                current_session['files'] = []
-                current_session['processed'] = False
+    c_up, c_in = st.columns([0.15, 0.85])
+    with c_up:
+        with st.popover("📎 附件"):
+            fs = st.file_uploader("上传材料", accept_multiple_files=True, label_visibility="collapsed")
+            if fs and st.button("确认"):
+                current_session["files"] = upload_handler(client, fs)
+                current_session["processed"] = False
                 st.rerun()
-
-    with st.popover("📎 添加附件", help="上传文件"):
-        files = st.file_uploader("选择文件", accept_multiple_files=True, label_visibility="collapsed")
-        if files:
-            if st.button("确认上传", use_container_width=True):
-                refs = upload_files(files)
-                current_session['files'] = refs
-                current_session['processed'] = False
-                st.rerun()
-
-    prompt = st.chat_input("输入问题...")
-
-# --- 发送逻辑 ---
-if st.session_state.trigger_regenerate:
-    if current_session['history'] and current_session['history'][-1]['role'] == 'user':
-        prompt = current_session['history'][-1]['content']
-        current_session['history'].pop()
-    st.session_state.trigger_regenerate = False
+    with c_in:
+        prompt = st.chat_input("输入问题或指令...")
 
 if prompt:
-    current_session['history'].append({"role": "user", "content": prompt})
+    current_session["history"].append({"role": "user", "content": prompt})
     st.rerun()
 
-if current_session['history'] and current_session['history'][-1]['role'] == 'user':
+if current_session["history"] and current_session["history"][-1]["role"] == "user":
     with st.chat_message("assistant"):
-        box = st.empty()
-        full_text = ""
-        usage_str = ""
+        box = st.empty(); full = ""
         
-        try:
-            history_for_api = []
-            for h in current_session['history'][:-1]:
-                history_for_api.append({
-                    "role": "user" if h["role"] == "user" else "model",
-                    "parts": [h["content"]]
-                })
-            chat.history = history_for_api
-            
-            if current_session['files'] and not current_session['processed']:
-                parts = [current_session['history'][-1]['content']] + current_session['files']
-                response = chat.send_message(parts, stream=True)
-                current_session['processed'] = True
-            else:
-                response = chat.send_message(current_session['history'][-1]['content'], stream=True)
-            
-            for chunk in response:
-                full_text += chunk.text
-                box.markdown(full_text + "▌")
-                if chunk.usage_metadata:
-                    in_t = chunk.usage_metadata.prompt_token_count
-                    out_t = chunk.usage_metadata.candidates_token_count
-                    usage_str = f"Token: {in_t}+{out_t}={in_t+out_t}"
+        # 准备内容：新版 SDK 混合发送模式
+        payload = []
+        if current_session["files"] and not current_session["processed"]:
+            payload.extend(current_session["files"])
+            current_session["processed"] = True
+        payload.append(current_session["history"][-1]["content"])
 
-            box.markdown(full_text)
+        # 转换历史
+        h_objs = []
+        for h in current_session["history"][:-1]:
+            h_objs.append(types.Content(
+                role="user" if h["role"] == "user" else "model",
+                parts=[types.Part(text=h["content"])]
+            ))
+
+        try:
+            # 默认隐形开启联网
+            chat = client.chats.create(
+                model=selected_model,
+                history=h_objs,
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                )
+            )
             
-            msg_data = {"role": "assistant", "content": full_text}
-            if usage_str: msg_data["usage"] = usage_str
-            current_session['history'].append(msg_data)
+            stream = chat.send_message_stream(message=payload)
+            for chunk in stream:
+                if chunk.text:
+                    full += chunk.text
+                    box.markdown(full + "▌")
+            box.markdown(full)
+            current_session["history"].append({"role": "assistant", "content": full})
             
-            if len(current_session['history']) == 2:
-                current_session['title'] = full_text[:10] + "..."
-            
+            if len(current_session["history"]) == 2:
+                current_session["title"] = current_session["history"][0]["content"][:10]
             st.rerun()
-            
         except Exception as e:
-            st.error(f"出错: {e}")
+            st.error(f"对话异常: {e}")
