@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # ================= 0. 版本元数据 =================
-APP_VERSION = "v4.0.1-PRO"
+APP_VERSION = "v4.0.2-PRO"
 BUILD_DATE = "2026-01-17"
 
 # ================= 1. 初始化页面与安全配置 =================
@@ -50,7 +50,7 @@ current_session = get_current_session()
 # ================= 2. 侧边栏 =================
 with st.sidebar:
     st.title("🦁 凶哥哥的 AI")
-    st.status(f"云端直连模式 | {APP_VERSION}", state="complete")
+    st.status(f"云端模式 | {APP_VERSION}", state="complete")
     
     with st.expander("⚙️ 模型与参数", expanded=True):
         model_list = [
@@ -87,12 +87,10 @@ with st.sidebar:
                 if st.button("🗑️", key=f"d_{sid}"):
                     if len(st.session_state.all_sessions) > 1: del st.session_state.all_sessions[sid]; st.rerun()
 
-    # --- 修正后的版本核对区域 ---
+    # --- 版本核对区域 ---
     st.markdown(f"""
     <div style='position: fixed; bottom: 10px; font-size: 12px; color: gray;'>
-    软件版本: {APP_VERSION}<br>
-    构建日期: {BUILD_DATE}<br>
-    SDK: {genai.__version__}
+    版本: {APP_VERSION} | SDK: {genai.__version__}
     </div>
     """, unsafe_allow_html=True)
 
@@ -109,7 +107,7 @@ def upload_handler_v4(client, files):
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir, ignore_errors=True)
     os.makedirs(temp_dir)
     
-    with st.status("🚀 AI 正在深度阅读附件...", expanded=True) as status:
+    with st.status("🚀 AI 正在深度读取附件...", expanded=True) as status:
         uploaded_refs = []
         local_paths = []
         for f in files:
@@ -122,7 +120,7 @@ def upload_handler_v4(client, files):
             try:
                 r = client.files.upload(path=path)
                 uploaded_refs.append(r)
-                st.write(f"已就绪: {os.path.basename(path)}")
+                st.write(f"   ✅ 已就绪: {os.path.basename(path)}")
             except Exception as e:
                 st.error(f"出错: {e}")
         
@@ -142,16 +140,73 @@ def upload_handler_v4(client, files):
 
 client = get_client()
 if client:
+    # 渲染历史
     for m in current_session["history"]:
         with st.chat_message(m["role"]): st.markdown(m["content"])
 
+    # --- 底部输入区 ---
+    # 【修复重点】在此预设 prompt 变量，防止 NameError
+    chat_prompt = None 
+
     with st.container():
+        # 附件展示
         if current_session["files"]:
-            with st.expander(f"📁 当前已挂载附件 ({len(current_session['files'])} 个)", expanded=False):
+            with st.expander(f"📁 已挂载附件 ({len(current_session['files'])} 个)", expanded=False):
                 cols = st.columns(2)
                 for idx, f_ref in enumerate(current_session["files"]):
                     cols[idx % 2].caption(f"📄 {f_ref.display_name}")
                 if st.button("🗑️ 清空当前附件"):
                     current_session["files"] = []; current_session["processed"] = False; st.rerun()
 
-        c
+        # 布局
+        c_up, c_in = st.columns([0.15, 0.85])
+        with c_up:
+            with st.popover("📎 附件"):
+                fs = st.file_uploader("支持图片/PDF", accept_multiple_files=True, label_visibility="collapsed")
+                if fs and st.button("确认上传", use_container_width=True):
+                    current_session["files"] = upload_handler_v4(client, fs)
+                    current_session["processed"] = False
+                    st.rerun()
+        with c_in:
+            chat_prompt = st.chat_input("输入问题（图片将随第一条消息发送）...")
+
+    # 执行对话逻辑
+    if chat_prompt:
+        current_session["history"].append({"role": "user", "content": chat_prompt})
+        st.rerun()
+
+    if current_session["history"] and current_session["history"][-1]["role"] == "user":
+        with st.chat_message("assistant"):
+            box = st.empty(); full = ""
+            payload = []
+            if current_session["files"] and not current_session["processed"]:
+                payload.extend(current_session["files"])
+                current_session["processed"] = True 
+            payload.append(current_session["history"][-1]["content"])
+
+            try:
+                h_objs = []
+                for h in current_session["history"][:-1]:
+                    h_objs.append(types.Content(role="user" if h["role"] == "user" else "model", parts=[types.Part(text=h["content"])]))
+
+                tools = [types.Tool(google_search=types.GoogleSearch())] if enable_search else []
+
+                chat_obj = client.chats.create(
+                    model=selected_model,
+                    history=h_objs,
+                    config=types.GenerateContentConfig(temperature=temperature, tools=tools)
+                )
+                
+                response = chat_obj.send_message_stream(message=payload)
+                for chunk in response:
+                    if chunk.text:
+                        full += chunk.text
+                        box.markdown(full + "▌")
+                box.markdown(full)
+                current_session["history"].append({"role": "assistant", "content": full})
+                
+                if len(current_session["history"]) == 2:
+                    current_session["title"] = current_session["history"][0]["content"][:10]
+                st.rerun()
+            except Exception as e:
+                st.error(f"对话异常: {e}")
