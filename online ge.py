@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 
 # ================= 0. 版本与配置 =================
-APP_VERSION = "v5.7.0-CLOUD-FIXED"
+APP_VERSION = "v5.8.0-CLOUD-FIXED-v2"
 st.set_page_config(page_title=f"凶哥哥 AI {APP_VERSION}", page_icon="🦁", layout="wide")
 
 # 【关键】安全读取 Streamlit Secrets 中的 API Key
@@ -43,7 +43,7 @@ def get_current_session():
                 "processed": False
             }
             sid = new_id
-        else: 
+        else:  
             sid = list(st.session_state.all_sessions.keys())[0]
         st.session_state.current_session_id = sid
     return st.session_state.all_sessions[sid]
@@ -57,13 +57,12 @@ def get_client():
     # 清除任何代理设置，云端环境不需要
     os.environ.pop('HTTP_PROXY', None)
     os.environ.pop('HTTPS_PROXY', None)
-    os.environ.pop('HTTPS_PROXY', None)
     
     try:
         client = genai.Client(api_key=API_KEY)
         return client
-    except Exception as e:
-        st. error(f"❌ 无法初始化 Gemini 客户端:  {e}")
+    except Exception as e: 
+        st.error(f"❌ 无法初始化 Gemini 客户端:  {e}")
         return None
 
 def upload_file_to_gemini(client, uploaded_file):
@@ -83,7 +82,7 @@ def upload_file_to_gemini(client, uploaded_file):
         # 【关键】判断 MIME 类型
         file_ext = os.path.splitext(uploaded_file.name)[1].lower()
         mime_type_map = {
-            ".pdf": "application/pdf",
+            ". pdf": "application/pdf",
             ".txt": "text/plain",
             ".md": "text/markdown",
             ".json": "application/json",
@@ -108,7 +107,7 @@ def upload_file_to_gemini(client, uploaded_file):
             "mime_type": response.mime_type,
             "name": response.name,
             "display_name": uploaded_file.name,
-            "size": os. path.getsize(file_path)
+            "size": os.path.getsize(file_path)
         }
         
         st.success(f"✅ 文件已上传:  {uploaded_file.name}")
@@ -124,12 +123,12 @@ def upload_file_to_gemini(client, uploaded_file):
         except:
             pass
 
-def chat_with_file(client, user_message, files_meta, chat_history):
+def chat_with_file(client, user_message, files_meta, chat_history, model_name):
     """
     【关键修正】与包含文件的对话
-    确保文件 URI 正确传递给模型
+    使用正确的 API 格式：types.Part.from_text(text=.. .) 使用关键字参数
     """
-    try: 
+    try:
         # 构建消息内容
         contents = []
         
@@ -144,23 +143,35 @@ def chat_with_file(client, user_message, files_meta, chat_history):
                 )
             )
         
-        # 然后添加文本消息
-        contents.append(types.Part. from_text(user_message))
+        # 【关键修正】然后添加文本消息 - 使用 text= 关键字参数
+        contents.append(types.Part. from_text(text=user_message))
         
         # 【关键】构建完整的对话历史
         conversation_parts = []
         for msg in chat_history:
             if msg["role"] == "user": 
-                conversation_parts.append(types.Content(role="user", parts=[types.Part.from_text(msg["content"])]))
+                # 【关键修正】使用 text= 关键字参数
+                conversation_parts.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=msg["content"])]
+                    )
+                )
             else:
-                conversation_parts.append(types.Content(role="model", parts=[types.Part.from_text(msg["content"])]))
+                # 【关键修正】使用 text= 关键字参数
+                conversation_parts.append(
+                    types.Content(
+                        role="model",
+                        parts=[types. Part.from_text(text=msg["content"])]
+                    )
+                )
         
         # 添加当前用户消息
         conversation_parts.append(types.Content(role="user", parts=contents))
         
         # 【关键】调用 API
         response = client.models.generate_content(
-            model="gemini-2.5-flash",  # 使用最新模型
+            model=model_name,
             contents=conversation_parts,
             config={
                 "temperature": 0.7,
@@ -172,29 +183,49 @@ def chat_with_file(client, user_message, files_meta, chat_history):
         
     except Exception as e:
         st.error(f"❌ API 调用失败: {e}")
+        import traceback
+        st.error(f"详细错误:\n{traceback.format_exc()}")
         return None
 
-def chat_without_file(client, user_message, chat_history):
+def chat_without_file(client, user_message, chat_history, model_name):
     """【关键修正】无文件的纯文本对话"""
-    try: 
+    try:
         # 构建对话历史
         conversation_parts = []
         for msg in chat_history:
             if msg["role"] == "user":
-                conversation_parts.append(types.Content(role="user", parts=[types. Part.from_text(msg["content"])]))
+                # 【关键修正】使用 text= 关键字参数
+                conversation_parts. append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=msg["content"])]
+                    )
+                )
             else:
-                conversation_parts.append(types.Content(role="model", parts=[types.Part.from_text(msg["content"])]))
+                # 【关键修正】使用 text= 关键字参数
+                conversation_parts.append(
+                    types.Content(
+                        role="model",
+                        parts=[types.Part.from_text(text=msg["content"])]
+                    )
+                )
         
         # 添加当前用户消息
-        conversation_parts.append(types.Content(role="user", parts=[types.Part.from_text(user_message)]))
+        # 【关键修正】使用 text= 关键字参数
+        conversation_parts. append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=user_message)]
+            )
+        )
         
         # 调用 API
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_name,
             contents=conversation_parts,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 4096,
+                "max_output_tokens":  4096,
             }
         )
         
@@ -202,6 +233,8 @@ def chat_without_file(client, user_message, chat_history):
         
     except Exception as e:
         st.error(f"❌ API 调用失败: {e}")
+        import traceback
+        st.error(f"详细错误:\n{traceback.format_exc()}")
         return None
 
 # ================= 3. UI 布局 =================
@@ -225,7 +258,7 @@ with st.sidebar:
     )
     
     # 处理文件上传
-    if uploaded_files: 
+    if uploaded_files:
         client = get_client()
         if client:
             st.info(f"🔄 检测到 {len(uploaded_files)} 个文件")
@@ -270,24 +303,15 @@ st.subheader("💬 对话")
 chat_container = st.container()
 with chat_container:
     for message in current_session["history"]: 
-        if message["role"] == "user":
+        if message["role"] == "user": 
             with st.chat_message("user"):
                 st.markdown(message["content"])
         else:
             with st.chat_message("assistant"):
-                st. markdown(message["content"])
+                st.markdown(message["content"])
 
 # 输入框
-col_input, col_button = st.columns([0.9, 0.1])
-
-with col_input:
-    user_input = st.chat_input(
-        "输入你的问题.. .",
-        key="chat_input"
-    )
-
-with col_button:
-    pass  # 按钮在下一行
+user_input = st.chat_input("输入你的问题...")
 
 # 处理用户输入
 if user_input:
@@ -315,14 +339,16 @@ if user_input:
                         client,
                         user_input,
                         current_session["files_meta"],
-                        current_session["history"][:-1]  # 不包括当前用户消息
+                        current_session["history"][:-1],  # 不包括当前用户消息
+                        model
                     )
-                else:
+                else: 
                     # 无文件时的纯文本对话
                     response = chat_without_file(
                         client,
                         user_input,
-                        current_session["history"][:-1]
+                        current_session["history"][:-1],
+                        model
                     )
                 
                 if response:
@@ -333,7 +359,8 @@ if user_input:
                     })
                     
                     st.markdown(response)
-                    st.rerun()
+                else: 
+                    st.error("❌ 未能获取响应，请检查错误信息")
 
 # 页脚
 st.divider()
