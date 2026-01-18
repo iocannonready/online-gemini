@@ -3,20 +3,29 @@ import os
 import time
 import shutil
 import uuid
-# 核心：使用 2026 最新版 SDK
+# 【核心】使用 Google 官方新版 SDK 命名空间
 from google import genai
 from google.genai import types
 
 # ================= 0. 配置与版本 =================
-APP_VERSION = "v5.1.0-LOCAL"
+APP_VERSION = "v5.2.0-CLOUD-OFFICIAL"
 st.set_page_config(page_title=f"凶哥哥 AI {APP_VERSION}", page_icon="🦁", layout="wide")
 
-# 初始化 Session
+# 从 Streamlit Secrets 获取 API Key
+try:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+except KeyError:
+    st.error("❌ 未检测到 API Key。请在 Streamlit App Settings -> Secrets 中配置 GOOGLE_API_KEY。")
+    st.stop()
+
+# ================= 1. Session State 初始化 =================
 if "all_sessions" not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state.all_sessions = {
         default_id: {
             "title": "新对话",
+            # history 存储纯字典数据，避免 SDK 对象序列化报错
+            # 格式: {"role": "user"/"model", "parts": [{"text": "..."}, {"file_uri": "...", "mime_type": "..."}]}
             "history": [], 
             "files_meta": [], 
             "processed": False
@@ -26,32 +35,88 @@ if "all_sessions" not in st.session_state:
 
 def get_current_session():
     sid = st.session_state.current_session_id
+    # 防止删除当前会话后报错，回退到第一个
     if sid not in st.session_state.all_sessions:
+        if not st.session_state.all_sessions:
+             new_id = str(uuid.uuid4())
+             st.session_state.all_sessions[new_id] = {"title": "新对话", "history": [], "files_meta": [], "processed": False}
         sid = list(st.session_state.all_sessions.keys())[0]
         st.session_state.current_session_id = sid
     return st.session_state.all_sessions[sid]
 
 current_session = get_current_session()
 
-# ================= 1. 侧边栏 (含代理设置) =================
+# ================= 2. 核心功能函数 (官方标准写法) =================
+
+def get_client():
+    # 云端直连，无需代理配置
+    return genai.Client(api_key=API_KEY)
+
+def upload_file_standard(client, uploaded_file):
+    """
+    遵循官方文档 'Files' 章节的上传逻辑
+    """
+    temp_dir = "temp_cloud_upload"
+    if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+    os.makedirs(temp_dir)
+    
+    file_meta = None
+    
+    try:
+        # 1. 保存到临时路径 (解决中文文件名编码问题)
+        ext = os.path.splitext(uploaded_file.name)[1].lower()
+        if not ext: ext = ".pdf" if uploaded_file.type == "application/pdf" else ".jpg"
+        
+        # 使用时间戳重命名，彻底规避 SDK 的 ASCII 编码 Bug
+        safe_filename = f"upload_{int(time.time())}{ext}"
+        local_path = os.path.join(temp_dir, safe_filename)
+        
+        with open(local_path, "wb") as b:
+            b.write(uploaded_file.getbuffer())
+            
+        # 2. 识别 MIME 类型
+        mime_type = "application/pdf" if ext == ".pdf" else "image/jpeg"
+        if "png" in ext: mime_type = "image/png"
+        
+        # 3. 上传 (官方参数名为 file)
+        # 文档: client.files.upload(file=...)
+        uploaded_file_obj = client.files.upload(file=local_path, config={"mime_type": mime_type})
+        
+        # 4. 等待处理完成 (Active)
+        while True:
+            # 文档: client.files.get(name=...)
+            f_info = client.files.get(name=uploaded_file_obj.name)
+            if f_info.state.name == "ACTIVE":
+                break
+            elif f_info.state.name == "FAILED":
+                raise Exception("Google 服务器处理文件失败")
+            time.sleep(1)
+            
+        # 返回元数据
+        file_meta = {
+            "uri": uploaded_file_obj.uri,
+            "mime_type": uploaded_file_obj.mime_type,
+            "name": uploaded_file_obj.name,
+            "display_name": uploaded_file.name
+        }
+        
+    except Exception as e:
+        st.error(f"上传失败: {e}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    return file_meta
+
+# ================= 3. 侧边栏 UI =================
 with st.sidebar:
     st.header("🦁 凶哥哥的 AI")
-    st.caption(f"本地代理版 | SDK: {genai.__version__}")
+    st.caption(f"Cloud Native | {APP_VERSION}")
     
-    # --- 🔌 网络与密钥设置 (中国大陆专用) ---
-    with st.expander("🔌 连接设置", expanded=True):
-        # 1. API Key 输入框 (本地通常没有 Secrets)
-        api_key_input = st.text_input("API Key", type="password", placeholder="AIzaSy...")
-        
-        # 2. 代理设置 (关键！)
-        use_proxy = st.checkbox("开启本地代理", value=True)
-        proxy_port = st.text_input("代理端口", value="1080", disabled=not use_proxy, help="Clash通常是7890，v2rayN通常是10809")
-
-    # --- 模型配置 ---
-    with st.expander("⚙️ 模型参数", expanded=True):
+    with st.expander("⚙️ 模型配置", expanded=True):
+        # 筛选出的 2026 可用模型
         model_list = [
-            "gemini-2.5-flash-lite",  # 速度最快，配额10RPM
-            "gemini-2.5-flash",       # 平衡主力
+            "gemini-2.5-flash",       # 主力推荐
+            "gemini-2.5-flash-lite",  # 极速省流
             "gemini-2.0-flash",       # 经典稳定
         ]
         selected_model = st.selectbox("选择模型", model_list, index=0)
@@ -60,224 +125,160 @@ with st.sidebar:
 
     st.divider()
     
-    # 附件管理区
+    # --- 附件管理 (集成在侧边栏) ---
     st.subheader("📁 附件管理")
-    up_files = st.file_uploader("添加文件", type=['pdf','png','jpg','jpeg'], accept_multiple_files=True, label_visibility="collapsed")
+    uploaded_files = st.file_uploader(
+        "添加图片/PDF", 
+        type=['pdf', 'png', 'jpg', 'jpeg'], 
+        accept_multiple_files=True,
+        label_visibility="collapsed"
+    )
     
-    # 自动上传逻辑 (复用 Client)
-    if up_files:
-        # 获取 Client (带代理配置)
-        if api_key_input:
-            # 临时配置代理环境变量
-            if use_proxy and proxy_port:
-                os.environ['HTTP_PROXY'] = f"http://127.0.0.1:{proxy_port}"
-                os.environ['HTTPS_PROXY'] = f"http://127.0.0.1:{proxy_port}"
-            else:
-                os.environ.pop('HTTP_PROXY', None); os.environ.pop('HTTPS_PROXY', None)
-            
-            client_tmp = genai.Client(api_key=api_key_input)
-            
-            # 检查去重
-            current_names = [x['display_name'] for x in current_session["files_meta"]]
-            new_files_obj = [f for f in up_files if f.name not in current_names]
-            
-            if new_files_obj:
-                # 引用下面的上传函数
-                # (由于 Streamlit 执行顺序，这里我们临时内联一个简化版上传逻辑或在下面定义)
-                pass 
-
-    # 历史列表
-    st.caption("💬 历史会话")
-    if st.button("➕ 新建对话", use_container_width=True):
-        nid = str(uuid.uuid4())
-        st.session_state.all_sessions[nid] = {"title": "新对话", "history": [], "files_meta": [], "processed": False}
-        st.session_state.current_session_id = nid; st.rerun()
+    # 自动触发上传逻辑
+    if uploaded_files:
+        client = get_client()
+        # 检查新文件
+        existing_names = [f['display_name'] for f in current_session["files_meta"]]
+        new_files = [f for f in uploaded_files if f.name not in existing_names]
         
+        if new_files:
+            with st.status("📡 正在同步至 Google...", expanded=True):
+                for f in new_files:
+                    meta = upload_file_standard(client, f)
+                    if meta:
+                        current_session["files_meta"].append(meta)
+                        st.write(f"✅ {f.name} 就绪")
+                current_session["processed"] = False # 有新文件，重置处理状态
+                st.rerun()
+
+    # 显示已挂载文件
+    if current_session["files_meta"]:
+        with st.container(border=True):
+            for f in current_session["files_meta"]:
+                st.caption(f"📎 {f['display_name']}")
+            if st.button("🗑️ 清空附件", use_container_width=True):
+                current_session["files_meta"] = []
+                current_session["processed"] = False
+                st.rerun()
+    else:
+        st.caption("暂无附件")
+
+    st.divider()
+    
+    # 会话管理
+    c1, c2 = st.columns([4, 1])
+    with c1: st.caption("历史会话")
+    with c2:
+        if st.button("➕"):
+            nid = str(uuid.uuid4())
+            st.session_state.all_sessions[nid] = {"title": "新对话", "history": [], "files_meta": [], "processed": False}
+            st.session_state.current_session_id = nid; st.rerun()
+
     for sid in list(st.session_state.all_sessions.keys()):
         sess = st.session_state.all_sessions[sid]
         active = (sid == st.session_state.current_session_id)
         if st.button(f"{'🔵' if active else '⚪'} {sess['title']}", key=sid, use_container_width=True):
             st.session_state.current_session_id = sid; st.rerun()
 
-# ================= 2. 核心功能函数 =================
-
-def get_client():
-    if not api_key_input:
-        st.warning("👈 请在左侧填入 API Key")
-        return None
-    
-    # 【关键】根据侧边栏设置配置代理
-    if use_proxy and proxy_port:
-        # 设置环境变量，httpx (SDK底层) 会自动读取
-        os.environ['HTTP_PROXY'] = f"http://127.0.0.1:{proxy_port}"
-        os.environ['HTTPS_PROXY'] = f"http://127.0.0.1:{proxy_port}"
-    else:
-        # 清除环境变量，防止干扰
-        os.environ.pop('HTTP_PROXY', None)
-        os.environ.pop('HTTPS_PROXY', None)
-    
-    return genai.Client(api_key=api_key_input)
-
-def upload_handler_local(client, files):
-    """
-    本地上传逻辑 (兼容中文名处理)
-    """
-    temp_dir = "temp_upload"
-    if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir)
-    
-    file_metas = []
-    
-    with st.status("📡 正在通过代理上传至 Google...", expanded=True) as status:
-        for i, f in enumerate(files):
-            # 1. 本地重命名 (防止 Windows 中文路径乱码)
-            ext = os.path.splitext(f.name)[1].lower()
-            if not ext: ext = ".pdf" if f.type == "application/pdf" else ".jpg"
-            safe_name = f"doc_{int(time.time())}_{i}{ext}"
-            local_path = os.path.join(temp_dir, safe_name)
-            
-            with open(local_path, "wb") as b: b.write(f.getbuffer())
-            
-            try:
-                # 2. 识别 MIME
-                mime = "application/pdf" if ext == ".pdf" else "image/jpeg"
-                if "png" in ext: mime = "image/png"
-                
-                # 3. 上传 (使用 file= 参数)
-                r = client.files.upload(file=local_path, config={"mime_type": mime})
-                
-                file_metas.append({
-                    "uri": r.uri, 
-                    "mime_type": r.mime_type, 
-                    "name": r.name,
-                    "display_name": f.name
-                })
-                st.write(f"✅ 已挂载: {f.name}")
-            except Exception as e:
-                st.error(f"❌ 上传 {f.name} 失败: {e}")
-                st.caption("提示：请检查代理端口是否正确 (Clash=7890, v2rayN=10809)")
-        
-        # 4. 状态轮询
-        st.write("⏳ 等待 Google 视觉引擎索引...")
-        while True:
-            all_active = True
-            for meta in file_metas:
-                try:
-                    f_info = client.files.get(name=meta["name"])
-                    if f_info.state.name == "PROCESSING":
-                        all_active = False; break
-                    elif f_info.state.name == "FAILED":
-                        st.error(f"处理失败: {meta['display_name']}")
-                except:
-                    pass # 忽略网络波动
-            if all_active: break
-            time.sleep(2)
-            
-        status.update(label="✅ 文件已就绪", state="complete", expanded=False)
-        
-    shutil.rmtree(temp_dir)
-    return file_metas
-
-# ================= 3. 主界面逻辑 =================
-
-# 补全侧边栏的上传触发逻辑
-if up_files and not current_session.get("upload_triggered", False):
-    # 检查新文件
-    current_display_names = [x['display_name'] for x in current_session["files_meta"]]
-    new_files = [f for f in up_files if f.name not in current_display_names]
-    
-    if new_files:
-        client = get_client()
-        if client:
-            new_metas = upload_handler_local(client, new_files)
-            current_session["files_meta"].extend(new_metas)
-            current_session["processed"] = False
-            current_session["upload_triggered"] = True # 防止刷新重复触发
-            st.rerun()
-
-# 附件展示区
-if current_session["files_meta"]:
-    with st.sidebar.container(border=True):
-        for f in current_session["files_meta"]:
-            st.text(f"📄 {f['display_name']}")
-        if st.button("🗑️ 清空所有", use_container_width=True):
-            current_session["files_meta"] = []
-            current_session["processed"] = False
-            st.rerun()
+# ================= 4. 主聊天界面 =================
 
 client = get_client()
 
-# 1. 渲染历史
+# 1. 渲染历史消息
 for msg in current_session["history"]:
     with st.chat_message("assistant" if msg["role"] == "model" else "user"):
-        st.markdown(msg["content"])
+        # 渲染纯文本部分
+        for part in msg["parts"]:
+            if "text" in part:
+                st.markdown(part["text"])
+            # 如果历史里有文件引用，也可以渲染个小图标提示
+            if "file_uri" in part:
+                st.caption(f"📄 [附件已发送]")
 
-# 2. 输入框
+# 2. 底部输入框 (始终置底)
 prompt = st.chat_input("输入问题...")
 
-# 3. 发送逻辑
-if prompt and client:
-    # 存用户输入
-    current_session["history"].append({"role": "user", "content": prompt})
+# 3. 处理发送逻辑
+if prompt:
+    # --- A. 构造用户消息 (User Content) ---
+    user_parts_storage = [] # 用于存入 Session 的格式 (纯字典)
+    user_parts_api = []     # 用于发给 API 的格式 (types.Part)
     
+    # 如果有附件且未处理，或者是第一轮，强制带上附件
+    # 官方推荐：Use types.Part.from_uri
+    if current_session["files_meta"] and not current_session["processed"]:
+        # 插入系统提示 (可选，增强效果)
+        sys_hint = "请基于以下附件内容回答："
+        user_parts_storage.append({"text": sys_hint})
+        user_parts_api.append(types.Part.from_text(text=sys_hint))
+        
+        for f in current_session["files_meta"]:
+            # 存入 Session (只存元数据)
+            user_parts_storage.append({"file_uri": f["uri"], "mime_type": f["mime_type"]})
+            # 发给 API (构造 Part 对象)
+            user_parts_api.append(types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime_type"]))
+        
+        current_session["processed"] = True
+
+    # 加入用户文本
+    user_parts_storage.append({"text": prompt})
+    user_parts_api.append(types.Part.from_text(text=prompt))
+    
+    # 更新本地历史
+    current_session["history"].append({"role": "user", "parts": user_parts_storage})
+    
+    # --- B. 构造历史上下文 (History) ---
+    # 需要把 session 中的字典历史转换为 types.Content 对象列表
+    api_history_objs = []
+    for h in current_session["history"][:-1]: # 不包含最新这条，因为最新这条在 message 参数里
+        parts_list = []
+        for p in h["parts"]:
+            if "text" in p:
+                parts_list.append(types.Part.from_text(text=p["text"]))
+            elif "file_uri" in p:
+                parts_list.append(types.Part.from_uri(file_uri=p["file_uri"], mime_type=p["mime_type"]))
+        
+        api_history_objs.append(types.Content(role=h["role"], parts=parts_list))
+
+    # --- C. 调用 API 生成 ---
     with st.chat_message("assistant"):
         box = st.empty()
-        full_text = ""
+        full_response = ""
         
         try:
-            # --- 历史构建 ---
-            api_history = []
-            for h in current_session["history"][:-1]: 
-                api_history.append(types.Content(
-                    role=h["role"],
-                    parts=[types.Part.from_text(text=h["content"])]
-                ))
-
-            # --- Payload 构建 ---
-            current_parts = []
-            
-            # 挂载文件 (仅首轮或未处理时)
-            if current_session["files_meta"]:
-                if not current_session["processed"]:
-                    current_parts.append(types.Part.from_text(text="[System: Please analyze these files]"))
-                
-                for f in current_session["files_meta"]:
-                    current_parts.append(types.Part.from_uri(
-                        file_uri=f["uri"],
-                        mime_type=f["mime_type"]
-                    ))
-                current_session["processed"] = True
-
-            current_parts.append(types.Part.from_text(text=prompt))
-
-            # --- 工具配置 ---
+            # 配置工具 (联网)
+            # 文档: tools=[types.Tool(google_search=types.GoogleSearch())]
             tools_cfg = [types.Tool(google_search=types.GoogleSearch())] if enable_search else None
-
-            # --- 发送请求 ---
+            
+            # 创建 Chat 会话
             chat = client.chats.create(
                 model=selected_model,
-                history=api_history,
+                history=api_history_objs,
                 config=types.GenerateContentConfig(
                     temperature=temperature,
                     tools=tools_cfg,
-                    system_instruction="你是一个全能助手。"
+                    system_instruction="你是一个专业的全能助手。如果用户提供了文件，请优先基于文件内容进行分析和回答。"
                 )
             )
             
-            response = chat.send_message_stream(message=current_parts)
+            # 流式发送
+            response_stream = chat.send_message_stream(message=user_parts_api)
             
-            for chunk in response:
+            for chunk in response_stream:
                 if chunk.text:
-                    full_text += chunk.text
-                    box.markdown(full_text + "▌")
+                    full_response += chunk.text
+                    box.markdown(full_response + "▌")
             
-            box.markdown(full_text)
-            current_session["history"].append({"role": "model", "content": full_text})
+            box.markdown(full_response)
             
+            # 存入历史
+            current_session["history"].append({"role": "model", "parts": [{"text": full_response}]})
+            
+            # 自动重命名标题 (仅第一轮)
             if len(current_session["history"]) == 2:
                 current_session["title"] = prompt[:10]
+            
             st.rerun()
-
+            
         except Exception as e:
-            st.error(f"发生错误: {e}")
-            st.caption("提示: 如果是 ConnectTimeout，请检查左侧代理端口是否正确 (v2rayN=10809)")
+            st.error(f"对话出错: {e}")
